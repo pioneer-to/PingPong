@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="pulse" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Pulse line — clean network heartbeat -->
+  <polyline
+    points="60,512 220,512 300,512 360,512 420,380 480,620 540,300 600,700 660,260 720,680 780,400 840,512 920,512 964,512"
+    fill="none"
+    stroke="#34d399"
+    stroke-width="42"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Peak dot -->
+  <circle cx="660" cy="260" r="32" fill="#34d399"/>
+</svg>
