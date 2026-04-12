@@ -52,3 +52,19 @@ struct PopoverContentView: View {
         currentPage = .main
     }
 }
+
+#Preview("PopoverContentView") {
+    let monitor = NetworkMonitor()
+    // Keep previews static
+    monitor.stop()
+
+    // Seed minimal state so the main page renders
+    monitor.currentResults[.internet] = PingResult(target: .internet, timestamp: .now, isReachable: true, latency: 22, detail: Config.internetHost)
+    monitor.currentResults[.router] = PingResult(target: .router, timestamp: .now, isReachable: true, latency: 3, detail: "192.168.1.1")
+    monitor.currentResults[.dns] = PingResult(target: .dns, timestamp: .now, isReachable: true, latency: 7, detail: "1.1.1.1")
+
+    return PopoverContentView()
+        .environment(monitor)
+        .frame(width: 360)
+}
+

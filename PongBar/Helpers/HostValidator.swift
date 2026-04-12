@@ -16,8 +16,10 @@ enum HostValidator {
         guard !trimmed.isEmpty, trimmed.count <= 253 else { return false }
         // Reject anything starting with a dash (would be treated as a flag by ping/traceroute)
         guard !trimmed.hasPrefix("-") else { return false }
-        // Only allow alphanumerics, dots, hyphens, colons (IPv6), brackets (IPv6)
-        let allowed = CharacterSet.alphanumerics.union(.init(charactersIn: ".-:[]"))
+
+        // Only allow ASCII alphanumerics, dots, hyphens, colons (IPv6), brackets (IPv6)
+        // CharacterSet.alphanumerics include non-ASCII which could cause issues in system tools.
+        let allowed = CharacterSet(charactersIn: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-:[]")
         return trimmed.unicodeScalars.allSatisfy { allowed.contains($0) }
     }
 
@@ -45,7 +47,8 @@ enum HostValidator {
         let labels = trimmed.split(separator: ".")
         guard labels.count >= 2 else { return false }
 
-        let allowed = CharacterSet.alphanumerics.union(.init(charactersIn: "-"))
+        // DNS labels should only contain ASCII alphanumerics and hyphens (LDH rule)
+        let allowed = CharacterSet(charactersIn: "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-")
         for label in labels {
             guard !label.isEmpty, label.count <= 63 else { return false }
             guard label.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return false }

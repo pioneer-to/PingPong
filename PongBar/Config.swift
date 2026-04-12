@@ -206,7 +206,7 @@ extension Config {
         static let pingTimeout: Int = 2
         static let dnsTimeout: Int = 3
 
-        static let internetHost = "1.1.1.1"
+        static let internetHost = "8.8.8.8"
         static let dnsTestDomain = "apple.com"
 
         static let latencyGoodThreshold: Double = 50
@@ -244,6 +244,13 @@ extension Config {
         static let wakeDelay: Double = 2.0
         static let chartRefreshInterval: Double = 3.0
         static let diagnosticRecentIncidents: Int = 20
+    }
+    // MARK: - Local Network Devices
+    static var fritzUsername: String {
+        UserDefaults.standard.string(forKey: Keys.fritzUsername) ?? ""
+    }
+    static var fritzPassword: String {
+        UserDefaults.standard.string(forKey: Keys.fritzPassword) ?? ""
     }
 }
 
@@ -292,6 +299,10 @@ extension Config {
         static let diagnosticRecentIncidents = "diagnosticRecentIncidents"
         static let tracerouteMaxHops = "tracerouteMaxHops"
         static let tracerouteTimeout = "tracerouteTimeout"
+        
+        static let fritzUsername = "fritzUsername"
+        static let fritzPassword = "fritzPassword"
+        static let localNetworkDevices = "localNetworkDevices"
     }
 }
 

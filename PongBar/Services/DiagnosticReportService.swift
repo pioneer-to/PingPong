@@ -10,12 +10,12 @@ import AppKit
 
 /// Generates a network diagnostic report from current monitor state.
 enum DiagnosticReportService {
-    /// Generate a full diagnostic report.
-    static func generate(from monitor: NetworkMonitor) -> String {
+    /// Generate a diagnostic report. Set `redacted` to true to mask sensitive info (SSIDs, IPs).
+    static func generate(from monitor: NetworkMonitor, redacted: Bool = false) -> String {
         var lines: [String] = []
 
         lines.append("═══════════════════════════════════")
-        lines.append("  PongBar Diagnostic Report")
+        lines.append("  PongBar Diagnostic Report \(redacted ? "(Redacted)" : "")")
         lines.append("  Generated: \(DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .medium))")
         lines.append("═══════════════════════════════════")
         lines.append("")
@@ -25,14 +25,20 @@ enum DiagnosticReportService {
         if let info = monitor.interfaceInfo {
             lines.append("  Type:      \(info.type.rawValue)")
             lines.append("  Interface: \(info.interfaceName)")
-            if let ip = info.ipAddress { lines.append("  IP:        \(ip)") }
-            if let ssid = info.wifiSSID { lines.append("  WiFi SSID: \(ssid)") }
-            if let rssi = info.wifiRSSI { lines.append("  WiFi RSSI: \(rssi) dBm (\(info.signalQuality ?? ""))") }
+            if let ip = info.ipAddress {
+                lines.append("  IP:        \(redacted ? maskIP(ip) : ip)")
+            }
+            if let ssid = info.wifiSSID {
+                lines.append("  WiFi SSID: \(redacted ? "[REDACTED]" : ssid)")
+            }
+            if let rssi = info.wifiRSSI {
+                lines.append("  WiFi RSSI: \(rssi) dBm (\(info.signalQuality ?? ""))")
+            }
         } else {
             lines.append("  No active interface detected")
         }
-        lines.append("  Gateway:   \(monitor.gatewayIP)")
-        lines.append("  Public IP: \(monitor.publicIP ?? "unknown")")
+        lines.append("  Gateway:   \(redacted ? maskIP(monitor.gatewayIP) : monitor.gatewayIP)")
+        lines.append("  Public IP: \(monitor.publicIP.map { redacted ? maskIP($0) : $0 } ?? "unknown")")
         lines.append("")
 
         // Current Status
@@ -48,7 +54,8 @@ enum DiagnosticReportService {
         // VPN server
         if let vpnResult = monitor.publicIPPingResult, let pip = monitor.publicIP {
             let status = vpnResult.isReachable ? "✓ UP" : "✗ DOWN"
-            lines.append("  \("VPN Server".padding(toLength: 14, withPad: " ", startingAt: 0)) \(status)  Latency: \(vpnResult.latencyString)  IP: \(pip)")
+            let ipLabel = redacted ? maskIP(pip) : pip
+            lines.append("  \("VPN Server".padding(toLength: 14, withPad: " ", startingAt: 0)) \(status)  Latency: \(vpnResult.latencyString)  IP: \(ipLabel)")
         }
         lines.append("")
 
@@ -85,10 +92,27 @@ enum DiagnosticReportService {
     }
 
     /// Copy the report to the clipboard.
-    static func copyToClipboard(from monitor: NetworkMonitor) {
-        let report = generate(from: monitor)
+    static func copyToClipboard(from monitor: NetworkMonitor, redacted: Bool = false) {
+        let report = generate(from: monitor, redacted: redacted)
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(report, forType: .string)
+    }
+
+    // MARK: - Helpers
+
+    /// Mask an IP address for privacy.
+    private static func maskIP(_ ip: String) -> String {
+        if ip.contains(":") {
+            // IPv6: mask last 4 groups
+            let parts = ip.components(separatedBy: ":")
+            guard parts.count >= 4 else { return "xxxx:xxxx:xxxx:xxxx" }
+            return parts.prefix(parts.count - 4).joined(separator: ":") + ":xxxx:xxxx:xxxx:xxxx"
+        } else {
+            // IPv4: mask last 2 octets
+            let parts = ip.components(separatedBy: ".")
+            guard parts.count == 4 else { return "x.x.x.x" }
+            return "\(parts[0]).\(parts[1]).x.x"
+        }
     }
 }

@@ -119,7 +119,7 @@ enum DNSSwitcherService {
             ? ["-setdnsservers", service, "empty"]
             : ["-setdnsservers", service] + servers
         guard let _ = await runNetworkSetup(args) else { return false }
-        logger.info("DNS changed to \(servers.isEmpty ? "DHCP" : servers.joined(separator: ", "), privacy: .public) on \(service, privacy: .public)")
+        logger.info("DNS changed to \(servers.isEmpty ? "DHCP" : servers.joined(separator: ", "), privacy: .private) on \(service, privacy: .private)")
         return true
     }
 
@@ -220,9 +220,10 @@ enum DNSSwitcherService {
 
         // Use AppleScript's `quoted form of` for safe path and argument handling.
         // This avoids shell metacharacter issues regardless of input content.
-        let quotedPath = "quoted form of \"\(tmpScript.path.replacingOccurrences(of: "\"", with: "\\\""))\""
-        let quotedServers = servers.map { "quoted form of \"\($0)\"" }.joined(separator: " & \" \" & ")
-        let source = "do shell script \"bash \" & \(quotedPath) & \" \" & \(quotedServers) with administrator privileges"
+        let quotedPath = "quoted form of \"\(tmpScript.path)\""
+        let serverArgs = servers.map { "quoted form of \"\($0)\"" }.joined(separator: " & \" \" & ")
+        let source = "do shell script \"bash \" & \(quotedPath) & \" \" & \(serverArgs) with administrator privileges"
+
         guard let appleScript = NSAppleScript(source: source) else {
             try? FileManager.default.removeItem(at: tmpScript)
             return false
@@ -297,7 +298,7 @@ enum DNSSwitcherService {
               !vpnName.hasPrefix("-"),
               vpnName.count <= 100 else { return false }
 
-        logger.info("Restarting VPN '\(vpnName, privacy: .public)' to restore DNS")
+        logger.info("Restarting VPN '\(vpnName, privacy: .private)' to restore DNS")
         guard await runScutil(["--nc", "stop", vpnName]) != nil else { return false }
         try? await Task.sleep(for: .seconds(1))
         guard await runScutil(["--nc", "start", vpnName]) != nil else { return false }

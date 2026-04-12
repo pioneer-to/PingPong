@@ -16,34 +16,31 @@ struct ThroughputRowView: View {
         let dlStr = Formatters.bytesPerSecond(downloadBytesPerSec)
         let ulStr = Formatters.bytesPerSecond(uploadBytesPerSec)
 
-        // Only show if at least one direction has traffic
-        if dlStr != nil || ulStr != nil {
-            HStack(spacing: 8) {
-                if let lbl = label {
-                    Text(lbl)
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.purple)
-                }
+        HStack(spacing: 8) {
+            if let lbl = label {
+                Text(lbl)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.purple)
+            }
 
-                HStack(spacing: 3) {
-                    Image(systemName: "arrow.down")
-                        .font(.system(size: 8))
-                        .foregroundStyle(.secondary)
-                    Text(dlStr ?? "—")
-                        .font(.system(size: 10, design: .monospaced))
-                        .monospacedDigit()
-                        .foregroundStyle(.primary)
-                }
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
+                Text(dlStr ?? "—")
+                    .font(.system(size: 10, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+            }
 
-                HStack(spacing: 3) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 8))
-                        .foregroundStyle(.secondary)
-                    Text(ulStr ?? "—")
-                        .font(.system(size: 10, design: .monospaced))
-                        .monospacedDigit()
-                        .foregroundStyle(.primary)
-                }
+            HStack(spacing: 3) {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
+                Text(ulStr ?? "—")
+                    .font(.system(size: 10, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
             }
         }
     }

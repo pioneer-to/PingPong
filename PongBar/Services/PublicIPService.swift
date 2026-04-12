@@ -38,9 +38,8 @@ enum PublicIPService {
 
         // Try multiple endpoints in order of speed
         let endpoints = [
-            "https://api.ipify.org",
-            "https://ifconfig.me/ip",
-            "https://icanhazip.com",
+            "https://ifconfig.co/ip",
+            "https://ident.me"
         ]
 
         for endpoint in endpoints {

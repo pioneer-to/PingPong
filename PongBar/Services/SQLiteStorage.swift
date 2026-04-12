@@ -41,7 +41,14 @@ final class SQLiteStorage: @unchecked Sendable {
 
         // All DB operations must run on the serial queue for thread safety
         queue.sync {
+            // Ensure restrictive permissions on the directory (owner-only)
+            let permissions: [FileAttributeKey: Any] = [.posixPermissions: 0o700]
+            try? FileManager.default.setAttributes(permissions, ofItemAtPath: dir.path)
+
             if sqlite3_open(dbPath, &db) == SQLITE_OK {
+                // Also ensure the DB file itself is owner-only
+                try? FileManager.default.setAttributes(permissions, ofItemAtPath: dbPath)
+
                 exec("PRAGMA journal_mode=WAL;")
                 exec("PRAGMA synchronous=NORMAL;")
                 createTable()
@@ -175,7 +182,7 @@ final class SQLiteStorage: @unchecked Sendable {
             if rc == SQLITE_DONE {
                 insertedCount += 1
             } else {
-                Self.logger.error("Sample insert failed: \(rc) for \(sample.effectiveKey, privacy: .public)")
+                Self.logger.error("Sample insert failed: \(rc) for \(sample.effectiveKey, privacy: .private)")
             }
         }
 

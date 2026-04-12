@@ -57,6 +57,11 @@ final class NetworkMonitor {
     var customResults: [UUID: PingResult] = [:]
     var customLatencyHistory: [UUID: [Double?]] = [:]
 
+    // MARK: - Local Network Devices
+    var localDevices: [LocalNetworkDevice] = []
+    var localResults: [UUID: PingResult] = [:]
+    var localLatencyHistory: [UUID: [Double?]] = [:]
+
     // MARK: - Configuration
 
     var pingInterval: TimeInterval
@@ -76,6 +81,9 @@ final class NetworkMonitor {
     private var checkCycleCount = 0
     private var pathUpdateTask: Task<Void, Never>?
     private var lastInterfaceName: String?
+    private var localDeviceRefreshTask: Task<Void, Never>?
+    private var lastLocalDeviceRefreshAt: Date = .distantPast
+    private let localDeviceRefreshMinInterval: TimeInterval = 5
 
     // MARK: - Computed
 
@@ -96,6 +104,7 @@ final class NetworkMonitor {
     init() {
         self.pingInterval = Config.pingInterval
         customTargets = CustomTargetStore.load()
+        localDevices = LocalNetworkDeviceStore.load()
         startPathMonitor()
         NotificationService.requestPermission()
         start()
@@ -314,12 +323,80 @@ final class NetworkMonitor {
             customLatencyHistory[id] = history
             SQLiteStorage.shared.record(LatencySample(target: .internet, timestamp: now, latency: latency, vpnActive: vpnActive, storageKey: "custom.\(target.host)"))
         }
+        
+        // Local device status is refreshed on a separate throttled task
+        // so heavy TR-064 calls do not block the main ping/update loop.
+        scheduleLocalDeviceRefresh(gatewayIP: gw, now: now)
 
         SQLiteStorage.shared.flush()
 
         checkCycleCount += 1
         if checkCycleCount % 10 == 0 {
             incidentManager.saveAll()
+        }
+    }
+
+    private func scheduleLocalDeviceRefresh(gatewayIP gw: String?, now: Date) {
+        guard !localDevices.isEmpty else { return }
+
+        let account = UserDefaults.standard.string(forKey: "local.username")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let password = UserDefaults.standard.string(forKey: "local.password")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !account.isEmpty, !password.isEmpty else { return }
+
+        guard localDeviceRefreshTask == nil else { return }
+        guard now.timeIntervalSince(lastLocalDeviceRefreshAt) >= localDeviceRefreshMinInterval else { return }
+        lastLocalDeviceRefreshAt = now
+
+        let routerIPGuess: String = {
+            if let gw,
+               gw.hasPrefix("192.168.") || gw.hasPrefix("10.") || gw.hasPrefix("172.16.") || gw.hasPrefix("172.17.")
+               || gw.hasPrefix("172.18.") || gw.hasPrefix("172.19.") || gw.hasPrefix("172.20.") || gw.hasPrefix("172.21.")
+               || gw.hasPrefix("172.22.") || gw.hasPrefix("172.23.") || gw.hasPrefix("172.24.") || gw.hasPrefix("172.25.")
+               || gw.hasPrefix("172.26.") || gw.hasPrefix("172.27.") || gw.hasPrefix("172.28.") || gw.hasPrefix("172.29.")
+               || gw.hasPrefix("172.30.") || gw.hasPrefix("172.31.") {
+                return gw
+            }
+            return "192.168.178.1"
+        }()
+
+        localDeviceRefreshTask = Task { [weak self] in
+            guard let self else { return }
+
+            var map = await TR064HostService.onlineMap(routerIP: routerIPGuess, username: account, password: password)
+            if map.isEmpty {
+                try? await Task.sleep(for: .milliseconds(300))
+                map = await TR064HostService.onlineMap(routerIP: routerIPGuess, username: account, password: password)
+            }
+
+            await MainActor.run {
+                defer { self.localDeviceRefreshTask = nil }
+                guard !map.isEmpty else { return }
+
+                let timestamp = Date()
+                for device in self.localDevices {
+                    let key1 = device.macAddress.lowercased()
+                    let key2 = key1.replacingOccurrences(of: "-", with: ":")
+                    let key3 = key1.replacingOccurrences(of: ":", with: "-")
+                    let entry = map[key1] ?? map[key2] ?? map[key3]
+                    let isOnline = entry?.active ?? false
+                    let ip = entry?.ip ?? device.ipAddress
+
+                    let latency: Double? = isOnline ? 0 : nil
+                    self.localResults[device.id] = PingResult(target: .internet, timestamp: timestamp, isReachable: isOnline, latency: latency, detail: ip)
+
+                    var history = self.localLatencyHistory[device.id] ?? []
+                    history.append(latency)
+                    if history.count > Config.maxHistorySamples {
+                        history.removeFirst(history.count - Config.maxHistorySamples)
+                    }
+                    self.localLatencyHistory[device.id] = history
+
+                    let wasReachable = (history.dropLast().last ?? nil) != nil
+                    if wasReachable && !isOnline && device.notifyConnectivityDown {
+                        NotificationService.notifyDown(target: .internet)
+                    }
+                }
+            }
         }
     }
 
@@ -345,7 +422,15 @@ final class NetworkMonitor {
         }
     }
 
+    // MARK: - Local Network Device Management
+    
+    func saveLocalDevices(_ devices: [LocalNetworkDevice]) {
+        self.localDevices = devices
+        LocalNetworkDeviceStore.save(devices)
+    }
+
     func clearHistory() {
         incidentManager.clearHistory()
     }
 }
+
