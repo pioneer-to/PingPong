@@ -35,16 +35,18 @@ struct LocalDeviceRowView: View {
 
             Spacer()
 
-            if sparklineData.compactMap({ $0 }).count >= 2 {
-                SparklineView(values: sparklineData, color: .purple)
-            }
+            if device.usePing {
+                if sparklineData.compactMap({ $0 }).count >= 2 {
+                    SparklineView(values: sparklineData, color: Color(red: 0.65, green: 0.52, blue: 0.0))
+                }
 
-            Text(result?.latencyString ?? "---")
-                .font(.system(.body, design: .monospaced))
-                .monospacedDigit()
-                .foregroundStyle(result?.latencyColor ?? .secondary)
-                .contentTransition(.numericText())
-                .animation(.easeInOut(duration: 0.2), value: result?.latency)
+                Text(result?.latencyString ?? "---")
+                    .font(.system(.body, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(result?.latencyColor ?? .secondary)
+                    .contentTransition(.numericText())
+                    .animation(.easeInOut(duration: 0.2), value: result?.latency)
+            }
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 12)

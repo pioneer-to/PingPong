@@ -13,6 +13,9 @@ struct MainStatusView: View {
     @State private var isShowingTR064Debug = false
     @State private var isTR064DebugLoading = false
     @State private var tr064DebugOutput = ""
+    @AppStorage("networkMap.traceTargetInput") private var traceTargetInput = ""
+    @State private var isResolvingTraceTarget = false
+    @FocusState private var isTraceTargetFieldFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -48,6 +51,14 @@ struct MainStatusView: View {
                 jitterValue: monitor.metrics.jitter[.dns],
                 sparklineData: monitor.metrics.latencyHistory[.dns] ?? []
             ) { navigate(.targetDetail(.dns, monitor.activeDNSServer ?? Config.dnsTestDomain)) }
+
+            Divider()
+                .padding(.vertical, 4)
+
+            tracerouteInputRow
+
+            Divider()
+                .padding(.vertical, 4)
 
             // VPN Server ping (visible only when public IP responds = VPN active)
             if let pip = monitor.publicIP, monitor.isVPNDetected, monitor.publicIPPingResult != nil {
@@ -138,6 +149,9 @@ struct MainStatusView: View {
                 }
             }
         }
+        .onAppear {
+            isTraceTargetFieldFocused = false
+        }
         .onDisappear {
             isShowingTR064Debug = false
         }
@@ -214,6 +228,28 @@ struct MainStatusView: View {
         .padding(.vertical, 8)
     }
 
+    private var tracerouteInputRow: some View {
+        HStack(spacing: 8) {
+            Text("Traceroute to")
+                .font(.body)
+
+            TextField("", text: $traceTargetInput, prompt: Text("google.com").foregroundStyle(.secondary))
+                .textFieldStyle(.roundedBorder)
+                .focused($isTraceTargetFieldFocused)
+                .onSubmit {
+                    runTraceFromInput()
+                }
+
+            Button("Trace") {
+                runTraceFromInput()
+            }
+            .buttonStyle(.bordered)
+            .disabled(isResolvingTraceTarget)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
     private var footerRow: some View {
         HStack {
             Spacer()
@@ -231,13 +267,96 @@ struct MainStatusView: View {
         .padding(.vertical, 6)
     }
 
+    private func runTraceFromInput() {
+        guard !isResolvingTraceTarget else { return }
+        isResolvingTraceTarget = true
+
+        Task {
+            let sanitized = sanitizeTraceInput(traceTargetInput)
+            let primaryResolved = await resolveTargetIPAddress(for: sanitized)
+            let fallbackResolved = await resolveTargetIPAddress(for: "google.com")
+            let resolvedIP = primaryResolved ?? fallbackResolved ?? "google.com"
+
+            await MainActor.run {
+                traceTargetInput = sanitized
+                isResolvingTraceTarget = false
+                navigate(.networkMap(resolvedIP))
+            }
+        }
+    }
+
+    private func sanitizeTraceInput(_ input: String) -> String {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "google.com" }
+
+        if let url = URL(string: trimmed),
+           let host = url.host,
+           HostValidator.isValid(host) {
+            return host
+        }
+
+        if HostValidator.isValid(trimmed) {
+            return trimmed
+        }
+
+        return "google.com"
+    }
+
+    private func resolveTargetIPAddress(for host: String) async -> String? {
+        if HostValidator.isValidIPAddress(host) {
+            return host
+        }
+
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: resolveTargetIPAddressSync(for: host))
+            }
+        }
+    }
+
+    private func resolveTargetIPAddressSync(for host: String) -> String? {
+        var hints = addrinfo()
+        hints.ai_socktype = SOCK_STREAM
+        hints.ai_family = AF_UNSPEC
+
+        var result: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, &hints, &result) == 0, let first = result else {
+            return nil
+        }
+        defer { freeaddrinfo(result) }
+
+        var ptr: UnsafeMutablePointer<addrinfo>? = first
+        while let current = ptr {
+            var hostBuffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            let status = getnameinfo(
+                current.pointee.ai_addr,
+                current.pointee.ai_addrlen,
+                &hostBuffer,
+                socklen_t(hostBuffer.count),
+                nil,
+                0,
+                NI_NUMERICHOST
+            )
+            if status == 0 {
+                return String(cString: hostBuffer)
+            }
+            ptr = current.pointee.ai_next
+        }
+
+        return nil
+    }
+
     private func runTR064Debug() {
         isShowingTR064Debug = true
         isTR064DebugLoading = true
-        tr064DebugOutput = "Running TR-064 debug..."
+        tr064DebugOutput = "Starting TR-064 debug..."
 
         Task {
-            let output = await buildTR064DebugOutput()
+            let output = await buildTR064DebugOutput { partialOutput in
+                await MainActor.run {
+                    tr064DebugOutput = partialOutput
+                }
+            }
             await MainActor.run {
                 tr064DebugOutput = output
                 isTR064DebugLoading = false
@@ -245,19 +364,45 @@ struct MainStatusView: View {
         }
     }
 
-    private func buildTR064DebugOutput() async -> String {
+    private func buildTR064DebugOutput(
+        onUpdate: @escaping @Sendable (String) async -> Void
+    ) async -> String {
+        let startedAt = Date()
         let account = UserDefaults.standard.string(forKey: "local.username")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let password = UserDefaults.standard.string(forKey: "local.password")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let credentialsPresent = !account.isEmpty && !password.isEmpty
 
         let routerIP = guessedRouterIP(from: monitor.gatewayIP)
         var lines: [String] = []
-        lines.append("Router IP used: \(routerIP)")
-        lines.append("Credentials present: \(credentialsPresent ? "yes" : "no")")
+        var rawLines: [String] = []
+
+        func emit() async {
+            await onUpdate(lines.joined(separator: "\n"))
+        }
+
+        func addLine(_ line: String, addToRaw: Bool = true) async {
+            lines.append(line)
+            if addToRaw {
+                rawLines.append(line)
+            }
+            await emit()
+        }
+
+        await addLine("[START] TR-064 debug")
+        await addLine("Router IP used: \(routerIP)")
+        await addLine("Gateway reported by app: \(monitor.gatewayIP)")
+        await addLine("Credentials present: \(credentialsPresent ? "yes" : "no")")
 
         guard credentialsPresent else {
-            lines.append("Error: Missing local TR-064 credentials (local.username / local.password).")
+            await addLine("Error: Missing local TR-064 credentials (local.username / local.password).")
             appendMacMatchLines(into: &lines, map: [:])
+            lines.append("")
+            lines.append("Summary:")
+            lines.append("- TR-064 debug did not run because credentials are missing.")
+            lines.append("")
+            lines.append("Full Response Text:")
+            lines.append(rawLines.joined(separator: "\n"))
+            await emit()
             return lines.joined(separator: "\n")
         }
 
@@ -268,40 +413,70 @@ struct MainStatusView: View {
 
         for (index, delay) in backoff.enumerated() {
             let attempt = index + 1
+            await addLine("Attempt \(attempt)/\(backoff.count): querying TR-064 host map...")
+
+            let attemptStarted = Date()
             let result = await TR064HostService.onlineMapWithError(routerIP: routerIP, username: account, password: password)
+            let elapsed = Date().timeIntervalSince(attemptStarted)
             map = result.map
             lastError = result.error
 
             if map.isEmpty {
                 if let error = result.error, !error.isEmpty {
-                    lines.append("Attempt \(attempt): map is empty (failed) - error: \(error)")
+                    await addLine("Attempt \(attempt): map is empty (failed) - error: \(error)")
                 } else {
-                    lines.append("Attempt \(attempt): map is empty (failed)")
+                    await addLine("Attempt \(attempt): map is empty (failed)")
                 }
+                await addLine(String(format: "Attempt \(attempt): duration %.2fs", elapsed))
                 if index < backoff.count - 1 {
+                    await addLine("Attempt \(attempt): waiting before retry...")
                     try? await Task.sleep(for: delay)
                 }
             } else {
                 successAttempt = attempt
-                lines.append("Attempt \(attempt): map has \(map.count) entries (success)")
+                await addLine("Attempt \(attempt): map has \(map.count) entries (success)")
+                await addLine(String(format: "Attempt \(attempt): duration %.2fs", elapsed))
                 break
             }
         }
 
-        if let successAttempt {
-            lines.append("Map empty: no")
-            lines.append("Succeeded on attempt: \(successAttempt)")
+        await addLine("")
+        await addLine("Host Map Overview:")
+        if map.isEmpty {
+            await addLine("- No host entries returned")
         } else {
-            lines.append("Map empty: yes")
-            lines.append("Failed after attempts: \(backoff.count)")
+            let sortedEntries = map.sorted { $0.key < $1.key }
+            for (mac, entry) in sortedEntries {
+                await addLine("- \(mac): active=\(entry.active), ip=\(entry.ip ?? "n/a")")
+            }
+        }
+
+        await addLine("")
+        await addLine("Result Summary:")
+        if let successAttempt {
+            await addLine("- Map empty: no")
+            await addLine("- Succeeded on attempt: \(successAttempt)")
+            await addLine("- Host entries: \(map.count)")
+        } else {
+            await addLine("- Map empty: yes")
+            await addLine("- Failed after attempts: \(backoff.count)")
             if let lastError, !lastError.isEmpty {
-                lines.append("Error: \(lastError)")
+                await addLine("- Error: \(lastError)")
             } else {
-                lines.append("Error: TR-064 returned no host map (empty or unreachable/invalid response).")
+                await addLine("- Error: TR-064 returned no host map (empty or unreachable/invalid response).")
             }
         }
 
         appendMacMatchLines(into: &lines, map: map)
+
+        let totalElapsed = Date().timeIntervalSince(startedAt)
+        lines.append("")
+        lines.append(String(format: "Total debug duration: %.2fs", totalElapsed))
+        lines.append("")
+        lines.append("Full Response Text:")
+        lines.append(rawLines.joined(separator: "\n"))
+
+        await emit()
         return lines.joined(separator: "\n")
     }
 
@@ -377,9 +552,11 @@ private struct TR064DebugSheetView: View {
                     onClose()
                 }
             }
-            ScrollView([.vertical, .horizontal]) {
+            ScrollView(.vertical) {
                 Text(output)
                     .font(.system(.caption, design: .monospaced))
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
                     .padding(10)

@@ -261,6 +261,12 @@ public enum TR064HostService {
     /// Returns dictionary keyed by lowercased mac addresses (colon-separated if present)
     /// with active status and optional IP address.
     public static func onlineMap(routerIP: String, username: String, password: String) async -> [String: (active: Bool, ip: String?)] {
+        // Prefer the same TR-064 client flow used by the device picker because it
+        // handles Fritz!Box auth challenges more robustly.
+        if let pickerMap = await onlineMapViaFritzService(routerIP: routerIP, username: username, password: password) {
+            return pickerMap
+        }
+
         guard let hosts = await fetchHosts(routerIP: routerIP, username: username, password: password) else {
             return [:]
         }
@@ -278,31 +284,67 @@ public enum TR064HostService {
         username: String,
         password: String
     ) async -> (map: [String: (active: Bool, ip: String?)], error: String?) {
-        let httpsResult = await fetchHostsInternalWithError(
-            routerIP: routerIP,
-            username: username,
-            password: password,
-            timeout: 5,
-            useHTTPS: true
-        )
-        if let hosts = httpsResult.hosts {
-            return (buildMap(from: hosts), nil)
-        }
+        do {
+            let devices = try await FritzBoxTR064Service.shared.fetchConnectedDevices(
+                routerIP: routerIP,
+                username: username,
+                password: password
+            )
+            var map = [String: (active: Bool, ip: String?)]()
+            for device in devices {
+                map[normalizeMACToKey(device.macAddress)] = (active: true, ip: device.ipAddress)
+            }
+            return (map, nil)
+        } catch {
+            let pickerError = "PickerFlow: \(error.localizedDescription)"
 
-        let httpResult = await fetchHostsInternalWithError(
-            routerIP: routerIP,
-            username: username,
-            password: password,
-            timeout: 5,
-            useHTTPS: false
-        )
-        if let hosts = httpResult.hosts {
-            return (buildMap(from: hosts), nil)
-        }
+            let httpsResult = await fetchHostsInternalWithError(
+                routerIP: routerIP,
+                username: username,
+                password: password,
+                timeout: 5,
+                useHTTPS: true
+            )
+            if let hosts = httpsResult.hosts {
+                return (buildMap(from: hosts), nil)
+            }
 
-        let httpsError = httpsResult.error ?? "unknown HTTPS error"
-        let httpError = httpResult.error ?? "unknown HTTP error"
-        return ([:], "HTTPS: \(httpsError) | HTTP: \(httpError)")
+            let httpResult = await fetchHostsInternalWithError(
+                routerIP: routerIP,
+                username: username,
+                password: password,
+                timeout: 5,
+                useHTTPS: false
+            )
+            if let hosts = httpResult.hosts {
+                return (buildMap(from: hosts), nil)
+            }
+
+            let httpsError = httpsResult.error ?? "unknown HTTPS error"
+            let httpError = httpResult.error ?? "unknown HTTP error"
+            return ([:], "\(pickerError) | HTTPS: \(httpsError) | HTTP: \(httpError)")
+        }
+    }
+
+    private static func onlineMapViaFritzService(
+        routerIP: String,
+        username: String,
+        password: String
+    ) async -> [String: (active: Bool, ip: String?)]? {
+        do {
+            let devices = try await FritzBoxTR064Service.shared.fetchConnectedDevices(
+                routerIP: routerIP,
+                username: username,
+                password: password
+            )
+            var map = [String: (active: Bool, ip: String?)]()
+            for device in devices {
+                map[normalizeMACToKey(device.macAddress)] = (active: true, ip: device.ipAddress)
+            }
+            return map
+        } catch {
+            return nil
+        }
     }
 
     private static func fetchHostsInternalWithError(

@@ -91,6 +91,8 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
         ballAnimator.setOneWayDuration(Self.oneWayDuration(for: totalBytesPerSecond))
         ballAnimator.updateNetworkState(
             totalBytesPerSecond: totalBytesPerSecond,
+            uploadBytesPerSecond: uploadBytesPerSecond,
+            downloadBytesPerSecond: downloadBytesPerSecond,
             internetDotIsRed: internetDotIsRed,
             internetLatencyTooHigh: internetLatencyTooHigh
         )
@@ -114,10 +116,9 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
             }
         case "dotSpeed":
             statusItem?.length = NSStatusItem.variableLength
-            let up = internetDotIsRed ? ("0", "B") : Self.speedParts(uploadBytesPerSecond)
-            let down = internetDotIsRed ? ("0", "B") : Self.speedParts(downloadBytesPerSecond)
-            let text = "↑\t\(Int(up.0) ?? 0)\t\(up.1)\n↓\t\(Int(down.0) ?? 0)\t\(down.1)"
-            button.attributedTitle = Self.attributedTwoLine(text)
+            let up = internetDotIsRed ? ("0", "B", 0) : Self.speedParts(uploadBytesPerSecond)
+            let down = internetDotIsRed ? ("0", "B", 0) : Self.speedParts(downloadBytesPerSecond)
+            button.attributedTitle = Self.attributedTwoLineSpeed(up: up, down: down)
         default:
             statusItem?.length = NSStatusItem.squareLength
             button.attributedTitle = NSAttributedString(string: "")
@@ -155,7 +156,105 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
         return NSAttributedString(string: text, attributes: attributes)
     }
 
-    private static func speedParts(_ bytesPerSecond: Double) -> (String, String) {
+    private static func attributedTwoLineSpeed(
+        up: (String, String, Int),
+        down: (String, String, Int)
+    ) -> NSAttributedString {
+        let attachment = NSTextAttachment()
+        attachment.image = speedBadgeImage(up: up, down: down)
+        attachment.bounds = NSRect(x: 0, y: -1, width: 34, height: 18)
+        return NSAttributedString(attachment: attachment)
+    }
+
+    private static func speedBadgeImage(
+        up: (String, String, Int),
+        down: (String, String, Int)
+    ) -> NSImage {
+        let size = NSSize(width: 34, height: 18)
+        let image = NSImage(size: size)
+
+        image.lockFocus()
+        defer { image.unlockFocus() }
+
+        NSColor.clear.setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+
+        let arrowFont = NSFont.monospacedDigitSystemFont(ofSize: 7, weight: .regular)
+        let numberFont = NSFont.monospacedDigitSystemFont(ofSize: 7, weight: .regular)
+        let unitFont = NSFont.monospacedDigitSystemFont(ofSize: 7, weight: .regular)
+
+        let rightAlignedParagraph = NSMutableParagraphStyle()
+        rightAlignedParagraph.alignment = .right
+
+        let arrowAttributes: [NSAttributedString.Key: Any] = [
+            .font: arrowFont,
+            .foregroundColor: NSColor.labelColor
+        ]
+        let numberAttributes: [NSAttributedString.Key: Any] = [
+            .font: numberFont,
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: rightAlignedParagraph
+        ]
+        let unitAttributes: [NSAttributedString.Key: Any] = [
+            .font: unitFont,
+            .foregroundColor: NSColor.labelColor,
+            .baselineOffset: -3.0
+        ]
+
+        let arrowX: CGFloat = 0
+        let numberX: CGFloat = 7
+        let numberWidth: CGFloat = 16
+        let unitX: CGFloat = 24
+        let topRowY: CGFloat = 9
+        let bottomRowY: CGFloat = 1
+        let arrowTopY: CGFloat = topRowY - 1
+        let arrowBottomY: CGFloat = bottomRowY - 1
+        let unitTopY: CGFloat = topRowY - 1
+        let unitBottomY: CGFloat = bottomRowY - 1
+
+        ("↑" as NSString).draw(at: CGPoint(x: arrowX, y: arrowTopY), withAttributes: arrowAttributes)
+        ("↓" as NSString).draw(at: CGPoint(x: arrowX, y: arrowBottomY), withAttributes: arrowAttributes)
+
+        let upNumber = String(format: "%3d", Int(up.0) ?? 0)
+        let downNumber = String(format: "%3d", Int(down.0) ?? 0)
+
+        (upNumber as NSString).draw(
+            in: NSRect(x: numberX, y: topRowY, width: numberWidth, height: 8),
+            withAttributes: numberAttributes
+        )
+        (downNumber as NSString).draw(
+            in: NSRect(x: numberX, y: bottomRowY, width: numberWidth, height: 8),
+            withAttributes: numberAttributes
+        )
+
+        (up.1 as NSString).draw(at: CGPoint(x: unitX, y: unitTopY), withAttributes: unitAttributes)
+        (down.1 as NSString).draw(at: CGPoint(x: unitX, y: unitBottomY), withAttributes: unitAttributes)
+
+        drawSegmentedLine(level: up.2, startX: numberX + 1, y: 17.0)
+        drawSegmentedLine(level: down.2, startX: numberX + 1, y: 0.0)
+
+        image.isTemplate = false
+        return image
+    }
+
+    private static func drawSegmentedLine(level: Int, startX: CGFloat, y: CGFloat) {
+        let clamped = max(0, min(level, 3))
+        let segmentLength: CGFloat = 4.6
+        let segmentGap: CGFloat = 0.9
+
+        for segment in 0..<4 {
+            let isActive = segment <= clamped
+            let x = startX + CGFloat(segment) * (segmentLength + segmentGap)
+            let path = NSBezierPath()
+            path.move(to: CGPoint(x: x, y: y))
+            path.line(to: CGPoint(x: x + segmentLength, y: y))
+            path.lineWidth = isActive ? 1.3 : 0.7
+            (isActive ? NSColor.labelColor : NSColor.tertiaryLabelColor).setStroke()
+            path.stroke()
+        }
+    }
+
+    private static func speedParts(_ bytesPerSecond: Double) -> (String, String, Int) {
         let units = ["B", "K", "M", "G"]
         let factor = 1024.0
         var value = max(0, bytesPerSecond)
@@ -173,7 +272,7 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
             rounded = Int(value.rounded())
         }
 
-        return ("\(min(rounded, 999))", units[unitIndex])
+        return ("\(min(rounded, 999))", units[unitIndex], unitIndex)
     }
 
     private static func oneWayDuration(for totalBytesPerSecond: Double) -> TimeInterval {
@@ -197,9 +296,14 @@ private final class MenuBarBallAnimator {
         isOutageMode ? redCenterFrameImage : frameImages[frameIndex]
     }
 
-    private var direction: Int = 1
-    private var accumulatedTime: TimeInterval = 0
-    private var oneWayDuration: TimeInterval = 1.0
+    private var targetOneWayDuration: TimeInterval = 1.0
+    private var currentOneWayDuration: TimeInterval = 1.0
+
+    // Physics state: normalized vertical range [0, 1]
+    // 0 = bottom, 1 = top
+    private var position: Double = 0.5
+    private var velocity: Double = 0
+
     private var animationTask: Task<Void, Never>?
     private let frameCount: Int
     private let frameImages: [NSImage]
@@ -207,6 +311,7 @@ private final class MenuBarBallAnimator {
 
     private var hasZeroTrafficSignal: Bool = false
     private var hasRedInternetSignal: Bool = false
+    private var prefersCeilingBounce: Bool = false
     private var zeroTrafficDuration: TimeInterval = 0
     private var isOutageMode: Bool = false
     private let zeroTrafficGraceSeconds: TimeInterval = 3.0
@@ -219,16 +324,37 @@ private final class MenuBarBallAnimator {
     }
 
     func setOneWayDuration(_ duration: TimeInterval) {
-        oneWayDuration = max(0.08, duration)
+        targetOneWayDuration = max(0.08, duration)
     }
 
     func updateNetworkState(
         totalBytesPerSecond: Double,
+        uploadBytesPerSecond: Double,
+        downloadBytesPerSecond: Double,
         internetDotIsRed: Bool,
         internetLatencyTooHigh: Bool
     ) {
         hasZeroTrafficSignal = totalBytesPerSecond <= 0.0
         hasRedInternetSignal = internetDotIsRed || (internetDotIsRed && internetLatencyTooHigh)
+
+        // Switch to ceiling-bounce mode only when upload is clearly dominant.
+        let minimumDirectionalTraffic = 8_192.0
+        let shouldPreferCeiling = uploadBytesPerSecond >= minimumDirectionalTraffic
+            && uploadBytesPerSecond > (downloadBytesPerSecond * 2.0)
+        let shouldPreferFloor = uploadBytesPerSecond < minimumDirectionalTraffic
+            || uploadBytesPerSecond <= (downloadBytesPerSecond * 1.6)
+        if shouldPreferCeiling {
+            if !prefersCeilingBounce {
+                prefersCeilingBounce = true
+                velocity = -velocity
+            }
+        } else if shouldPreferFloor {
+            if prefersCeilingBounce {
+                prefersCeilingBounce = false
+                velocity = -velocity
+            }
+        }
+
         if !hasZeroTrafficSignal {
             zeroTrafficDuration = 0
             if !hasRedInternetSignal {
@@ -244,7 +370,6 @@ private final class MenuBarBallAnimator {
             let tick: TimeInterval = 0.02
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(20))
-                accumulatedTime += tick
 
                 if hasZeroTrafficSignal {
                     zeroTrafficDuration += tick
@@ -256,37 +381,64 @@ private final class MenuBarBallAnimator {
                 isOutageMode = outageByZeroTraffic || hasRedInternetSignal
                 if isOutageMode {
                     frameIndex = frameCount / 2
+                    position = 0.5
+                    velocity = 0
                     continue
                 }
 
-                let stepDuration = max(0.005, oneWayDuration / Double(max(1, frameCount - 1)))
-                while accumulatedTime >= stepDuration {
-                    accumulatedTime -= stepDuration
-                    advanceFrame()
-                }
+                // Smoothly adapt to new target speed while still reacting quickly.
+                let smoothingTau: TimeInterval = 0.22
+                let blend = min(1.0, tick / smoothingTau)
+                currentOneWayDuration += (targetOneWayDuration - currentOneWayDuration) * blend
+
+                stepPhysics(dt: tick)
+                updateFrameIndexFromPosition()
             }
         }
     }
 
-    private func advanceFrame() {
-        let next = frameIndex + direction
-        if next >= frameCount {
-            direction = -1
-            frameIndex = max(0, frameCount - 2)
-            return
+    private func stepPhysics(dt: TimeInterval) {
+        let duration = max(0.08, currentOneWayDuration)
+
+        // For a ballistic arc that traverses one normalized half-cycle in `duration`.
+        let gravity = 2.0 / (duration * duration)
+        let desiredLaunchVelocity = gravity * duration
+
+        // Symmetric model:
+        // - floor mode attracts downward and bounces at y=0
+        // - ceiling mode attracts upward and bounces at y=1
+        let acceleration = prefersCeilingBounce ? gravity : -gravity
+        let bounceBoundary = prefersCeilingBounce ? 1.0 : 0.0
+        let oppositeBoundary = prefersCeilingBounce ? 0.0 : 1.0
+        let bounceAwaySign = prefersCeilingBounce ? -1.0 : 1.0
+
+        velocity += acceleration * dt
+        position += velocity * dt
+
+        if (prefersCeilingBounce && position > bounceBoundary) || (!prefersCeilingBounce && position < bounceBoundary) {
+            position = bounceBoundary
+            let reflected = abs(velocity) * 0.82
+            velocity = bounceAwaySign * ((reflected * 0.35) + (desiredLaunchVelocity * 0.65))
         }
-        if next < 0 {
-            direction = 1
-            frameIndex = min(frameCount - 1, 1)
-            return
+
+        if (prefersCeilingBounce && position < oppositeBoundary) || (!prefersCeilingBounce && position > oppositeBoundary) {
+            position = oppositeBoundary
+            if (prefersCeilingBounce && velocity < 0) || (!prefersCeilingBounce && velocity > 0) {
+                velocity = -bounceAwaySign * max(0.02, abs(velocity) * 0.20)
+            }
         }
-        frameIndex = next
+    }
+
+    private func updateFrameIndexFromPosition() {
+        let normalized = max(0.0, min(1.0, position))
+        let idx = Int((normalized * Double(max(1, frameCount - 1))).rounded())
+        frameIndex = max(0, min(frameCount - 1, idx))
     }
 
     private static func makeFrames() -> [NSImage] {
         let frameCount = 25
-        let yMin: CGFloat = -4.6
-        let yMax: CGFloat = 4.6
+        let yMin: CGFloat = -4.4
+        let yMax: CGFloat = 5.8
         let yOffsets: [CGFloat] = (0..<frameCount).map { idx in
             let t = CGFloat(idx) / CGFloat(max(1, frameCount - 1))
             return yMin + (yMax - yMin) * t

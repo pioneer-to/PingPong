@@ -28,6 +28,15 @@ struct LocalNetworkDevice: Identifiable, Codable, Equatable, Hashable {
     
     /// Whether this device should trigger push notifications when unreachable
     var notifyConnectivityDown: Bool
+
+    /// Whether ping-based latency should be used for this device's UI display.
+    var usePing: Bool = false
+
+    /// Whether this host was previously verified to answer ICMP ping.
+    var pingSupported: Bool? = nil
+
+    /// Last time we checked whether this host supports ping.
+    var pingProbeLastCheckedAt: Date? = nil
     
     var displayName: String {
         return customName.isEmpty ? originalName : customName

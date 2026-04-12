@@ -840,9 +840,14 @@ private struct LocalDeviceSettingsRow: View {
 
             Spacer()
 
-            if sparklineData.compactMap({ $0 }).count >= 2 {
-                SparklineView(values: sparklineData, color: .purple)
-            }
+            Toggle("Use Ping", isOn: Binding(
+                get: { device.usePing },
+                set: { newValue in
+                    setUsePing(newValue)
+                }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.small)
 
             Button {
                 removeDevice()
@@ -901,6 +906,13 @@ private struct LocalDeviceSettingsRow: View {
         value
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .filter { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }
+    }
+
+    private func setUsePing(_ enabled: Bool) {
+        guard let index = monitor.localDevices.firstIndex(where: { $0.id == device.id }) else { return }
+        var updated = monitor.localDevices
+        updated[index].usePing = enabled
+        monitor.saveLocalDevices(updated)
     }
 
     private func removeDevice() {

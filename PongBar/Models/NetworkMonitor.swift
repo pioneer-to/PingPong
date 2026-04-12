@@ -84,6 +84,7 @@ final class NetworkMonitor {
     private var localDeviceRefreshTask: Task<Void, Never>?
     private var lastLocalDeviceRefreshAt: Date = .distantPast
     private let localDeviceRefreshMinInterval: TimeInterval = 5
+    private let localDevicePingProbeRefreshInterval: TimeInterval = 30 * 24 * 60 * 60
 
     // MARK: - Computed
 
@@ -359,6 +360,7 @@ final class NetworkMonitor {
             return "192.168.178.1"
         }()
 
+        let devicesSnapshot = localDevices
         localDeviceRefreshTask = Task { [weak self] in
             guard let self else { return }
 
@@ -368,36 +370,116 @@ final class NetworkMonitor {
                 map = await TR064HostService.onlineMap(routerIP: routerIPGuess, username: account, password: password)
             }
 
+            guard !map.isEmpty else {
+                await MainActor.run {
+                    self.localDeviceRefreshTask = nil
+                }
+                return
+            }
+
+            let timestamp = Date()
+            var pingLatencyByID: [UUID: Double?] = [:]
+            var onlineStateByID: [UUID: (isOnline: Bool, ip: String)] = [:]
+            var updatedDevices = devicesSnapshot
+            var shouldPersistDeviceMetadata = false
+
+            for index in updatedDevices.indices {
+                var device = updatedDevices[index]
+                let key1 = device.macAddress.lowercased()
+                let key2 = key1.replacingOccurrences(of: "-", with: ":")
+                let key3 = key1.replacingOccurrences(of: ":", with: "-")
+                let entry = map[key1] ?? map[key2] ?? map[key3]
+                let isOnline = entry?.active ?? false
+                let ip = entry?.ip ?? device.ipAddress
+                onlineStateByID[device.id] = (isOnline: isOnline, ip: ip)
+
+                if isOnline && shouldProbePingSupport(for: device, now: timestamp), HostValidator.isValidIPAddress(ip) {
+                    let probe = await PingService.ping(ip)
+                    let wasUsePing = device.usePing
+                    let wasSupported = device.pingSupported
+                    let wasCheckedAt = device.pingProbeLastCheckedAt
+
+                    device.pingSupported = (probe != nil)
+                    device.pingProbeLastCheckedAt = timestamp
+                    if probe != nil {
+                        device.usePing = true
+                    } else {
+                        device.usePing = false
+                    }
+
+                    if device.usePing != wasUsePing || device.pingSupported != wasSupported || device.pingProbeLastCheckedAt != wasCheckedAt {
+                        shouldPersistDeviceMetadata = true
+                    }
+                    updatedDevices[index] = device
+                }
+
+                let usePingLatency = device.usePing && (device.pingSupported ?? false) && isOnline && HostValidator.isValidIPAddress(ip)
+                if usePingLatency {
+                    pingLatencyByID[device.id] = await averagePingLatency(host: ip, count: 3)
+                } else {
+                    pingLatencyByID[device.id] = nil
+                }
+            }
+
             await MainActor.run {
                 defer { self.localDeviceRefreshTask = nil }
-                guard !map.isEmpty else { return }
 
-                let timestamp = Date()
+                if shouldPersistDeviceMetadata {
+                    var persisted = self.localDevices
+                    for idx in persisted.indices {
+                        if let updated = updatedDevices.first(where: { $0.id == persisted[idx].id }) {
+                            persisted[idx].usePing = updated.usePing
+                            persisted[idx].pingSupported = updated.pingSupported
+                            persisted[idx].pingProbeLastCheckedAt = updated.pingProbeLastCheckedAt
+                        }
+                    }
+                    self.saveLocalDevices(persisted)
+                }
+
                 for device in self.localDevices {
-                    let key1 = device.macAddress.lowercased()
-                    let key2 = key1.replacingOccurrences(of: "-", with: ":")
-                    let key3 = key1.replacingOccurrences(of: ":", with: "-")
-                    let entry = map[key1] ?? map[key2] ?? map[key3]
-                    let isOnline = entry?.active ?? false
-                    let ip = entry?.ip ?? device.ipAddress
+                    guard let state = onlineStateByID[device.id] else { continue }
+                    let latency = device.usePing ? (pingLatencyByID[device.id] ?? nil) : nil
+                    let previousReachable = self.localResults[device.id]?.isReachable ?? false
 
-                    let latency: Double? = isOnline ? 0 : nil
-                    self.localResults[device.id] = PingResult(target: .internet, timestamp: timestamp, isReachable: isOnline, latency: latency, detail: ip)
+                    self.localResults[device.id] = PingResult(
+                        target: .internet,
+                        timestamp: timestamp,
+                        isReachable: state.isOnline,
+                        latency: latency,
+                        detail: state.ip
+                    )
 
                     var history = self.localLatencyHistory[device.id] ?? []
-                    history.append(latency)
+                    history.append(device.usePing ? latency : nil)
                     if history.count > Config.maxHistorySamples {
                         history.removeFirst(history.count - Config.maxHistorySamples)
                     }
                     self.localLatencyHistory[device.id] = history
 
-                    let wasReachable = (history.dropLast().last ?? nil) != nil
-                    if wasReachable && !isOnline && device.notifyConnectivityDown {
+                    if previousReachable && !state.isOnline && device.notifyConnectivityDown {
                         NotificationService.notifyDown(target: .internet)
                     }
                 }
             }
         }
+    }
+
+    private func shouldProbePingSupport(for device: LocalNetworkDevice, now: Date) -> Bool {
+        guard let lastChecked = device.pingProbeLastCheckedAt else {
+            return true
+        }
+        return now.timeIntervalSince(lastChecked) >= localDevicePingProbeRefreshInterval
+    }
+
+    private func averagePingLatency(host: String, count: Int) async -> Double? {
+        var values: [Double] = []
+        for _ in 0..<count {
+            if let value = await PingService.ping(host) {
+                values.append(value)
+            }
+        }
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Double(values.count)
     }
 
     // MARK: - Custom Target Management

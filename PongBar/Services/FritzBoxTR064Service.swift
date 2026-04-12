@@ -18,6 +18,9 @@ enum FritzBoxError: Error {
 /// A lightweight, Native Swift implementation of TR-064 for fetching local hosts.
 final class FritzBoxTR064Service: NSObject, URLSessionTaskDelegate {
     static let shared = FritzBoxTR064Service()
+
+    private var activeUsername: String = ""
+    private var activePassword: String = ""
     
     private lazy var session: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
@@ -26,8 +29,8 @@ final class FritzBoxTR064Service: NSObject, URLSessionTaskDelegate {
     }()
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        let username = Config.fritzUsername
-        let password = Config.fritzPassword
+        let username = activeUsername
+        let password = activePassword
         
         guard !username.isEmpty, !password.isEmpty else {
             completionHandler(.cancelAuthenticationChallenge, nil)
@@ -45,10 +48,28 @@ final class FritzBoxTR064Service: NSObject, URLSessionTaskDelegate {
     
     /// Fetches all active connected devices to the router
     func fetchConnectedDevices(routerIP: String) async throws -> [LocalNetworkDevice] {
-        guard !Config.fritzUsername.isEmpty, !Config.fritzPassword.isEmpty else {
+        try await fetchConnectedDevices(
+            routerIP: routerIP,
+            username: Config.fritzUsername,
+            password: Config.fritzPassword
+        )
+    }
+
+    /// Fetches all active connected devices to the router using explicit credentials.
+    func fetchConnectedDevices(routerIP: String, username: String, password: String) async throws -> [LocalNetworkDevice] {
+        let sanitizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sanitizedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sanitizedUsername.isEmpty, !sanitizedPassword.isEmpty else {
             throw FritzBoxError.missingCredentials
         }
-        
+
+        activeUsername = sanitizedUsername
+        activePassword = sanitizedPassword
+        defer {
+            activeUsername = ""
+            activePassword = ""
+        }
+
         // 1. Get number of hosts
         let totalHosts = try await getHostNumberOfEntries(routerIP: routerIP)
         
@@ -63,7 +84,10 @@ final class FritzBoxTR064Service: NSObject, URLSessionTaskDelegate {
                         originalName: hostInfo.name,
                         customName: "",
                         symbolName: "desktopcomputer",
-                        notifyConnectivityDown: false
+                        notifyConnectivityDown: false,
+                        usePing: false,
+                        pingSupported: nil,
+                        pingProbeLastCheckedAt: nil
                     )
                     activeDevices.append(newDevice)
                 }
