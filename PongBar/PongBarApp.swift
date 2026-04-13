@@ -50,7 +50,7 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
 
         let root = PopoverContentView()
             .environment(AppContainer.monitor)
-            .frame(minWidth: 300, idealWidth: 360)
+            .frame(minWidth: 450, idealWidth: 540)
         popover.contentViewController = NSHostingController(rootView: root)
         popover.behavior = .transient
 

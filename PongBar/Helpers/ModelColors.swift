@@ -37,3 +37,16 @@ extension Double {
         return .green
     }
 }
+
+extension Int {
+    var signalQualityColor: Color {
+        let lowThreshold = Swift.max(0, Swift.min(100, Int((Config.speedQualityLowThreshold / 10.0).rounded())))
+        let mediumThreshold = Swift.max(0, Swift.min(100, Int((Config.speedQualityMediumThreshold / 10.0).rounded())))
+        let highThreshold = Swift.max(0, Swift.min(100, Int((Config.speedQualityHighThreshold / 10.0).rounded())))
+
+        if self < lowThreshold { return .red }
+        if self < mediumThreshold { return .orange }
+        if self < highThreshold { return .yellow }
+        return .green
+    }
+}

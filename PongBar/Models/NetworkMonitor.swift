@@ -61,6 +61,8 @@ final class NetworkMonitor {
     var localDevices: [LocalNetworkDevice] = []
     var localResults: [UUID: PingResult] = [:]
     var localSpeeds: [UUID: Double] = [:]
+    var localSignalStrengths: [UUID: Int] = [:]
+    var localBands: [UUID: String] = [:]
 
     // MARK: - Configuration
 
@@ -106,6 +108,7 @@ final class NetworkMonitor {
         self.localDeviceSpeedInterval = Config.localDeviceSpeedInterval
         customTargets = CustomTargetStore.load()
         localDevices = LocalNetworkDeviceStore.load()
+        LocalDeviceSpeedStorage.shared.syncSelectedDevices(localDevices)
         startPathMonitor()
         NotificationService.requestPermission()
         start()
@@ -378,6 +381,12 @@ final class NetworkMonitor {
                 password: password,
                 macAddresses: devicesSnapshot.map(\.macAddress)
             )
+            let wifiAssociationMap = await TR064HostService.wifiAssociationMap(
+                routerIP: routerIPGuess,
+                username: account,
+                password: password,
+                macAddresses: devicesSnapshot.map(\.macAddress)
+            )
 
             let now = Date()
             await MainActor.run {
@@ -399,8 +408,22 @@ final class NetworkMonitor {
 
                     if let speed = self.localMapEntry(for: device.macAddress, in: speedMap) {
                         self.localSpeeds[device.id] = speed
+                        LocalDeviceSpeedStorage.shared.recordSpeed(
+                            macAddress: device.macAddress,
+                            value: speed,
+                            unit: .mbitPerSecond,
+                            timestamp: now
+                        )
                     } else {
                         self.localSpeeds[device.id] = nil
+                    }
+
+                    if let wifiInfo = self.localMapEntry(for: device.macAddress, in: wifiAssociationMap) {
+                        self.localSignalStrengths[device.id] = wifiInfo.signalStrengthPercent
+                        self.localBands[device.id] = wifiInfo.band
+                    } else {
+                        self.localSignalStrengths[device.id] = nil
+                        self.localBands[device.id] = nil
                     }
 
                     if previousReachable && !isOnline && device.notifyConnectivityDown {
@@ -469,9 +492,12 @@ final class NetworkMonitor {
     
     func saveLocalDevices(_ devices: [LocalNetworkDevice]) {
         self.localDevices = devices
+        LocalDeviceSpeedStorage.shared.syncSelectedDevices(devices)
         let validIDs = Set(devices.map(\.id))
         localResults = localResults.filter { validIDs.contains($0.key) }
         localSpeeds = localSpeeds.filter { validIDs.contains($0.key) }
+        localSignalStrengths = localSignalStrengths.filter { validIDs.contains($0.key) }
+        localBands = localBands.filter { validIDs.contains($0.key) }
         LocalNetworkDeviceStore.save(devices)
         Task { await refreshLocalDeviceSpeeds() }
     }

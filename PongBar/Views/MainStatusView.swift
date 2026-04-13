@@ -84,12 +84,45 @@ struct MainStatusView: View {
             }
 
             // Local Network LAN Devices
+            if !monitor.localDevices.isEmpty {
+                HStack(spacing: 8) {
+                    Text("")
+                        .frame(width: 14)
+                    Text("")
+                        .frame(width: 20)
+                    Text("Device")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Signal")
+                        .frame(width: 56, alignment: .trailing)
+                    Text("Mbit/s")
+                        .frame(width: 60, alignment: .trailing)
+                    Text("")
+                        .frame(width: 12)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 2)
+            }
+
             ForEach(monitor.localDevices) { device in
-                LocalDeviceRowView(
-                    device: device,
-                    result: monitor.localResults[device.id],
-                    speedMbps: monitor.localSpeeds[device.id]
-                )
+                let currentDeviceIP = monitor.interfaceInfo?.ipAddress?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let deviceIP = (monitor.localResults[device.id]?.detail ?? device.ipAddress).trimmingCharacters(in: .whitespacesAndNewlines)
+                let isCurrentDevice = currentDeviceIP != nil && !deviceIP.isEmpty && currentDeviceIP == deviceIP
+                Button {
+                    navigate(.localDeviceSpeedDetail(device))
+                } label: {
+                    LocalDeviceRowView(
+                        device: device,
+                        result: monitor.localResults[device.id],
+                        speedMbps: monitor.localSpeeds[device.id],
+                        signalStrengthPercent: monitor.localSignalStrengths[device.id],
+                        band: monitor.localBands[device.id],
+                        showStatusIndicator: !isCurrentDevice,
+                        showDisclosure: true
+                    )
+                }
+                .buttonStyle(.plain)
             }
 
             Divider()
@@ -457,82 +490,100 @@ struct MainStatusView: View {
         }
 
         var map: [String: (active: Bool, ip: String?)] = [:]
+        var fullHostList: [LocalNetworkDevice] = []
         var successAttempt: Int?
         var lastError: String?
         let backoff: [Duration] = [.milliseconds(500), .seconds(1), .seconds(2)]
 
         for (index, delay) in backoff.enumerated() {
             let attempt = index + 1
-            await addLine("Attempt \(attempt)/\(backoff.count): querying TR-064 host map...")
+            await addLine("Attempt \(attempt)/\(backoff.count): querying TR-064 host list (device-picker flow)...")
 
             let attemptStarted = Date()
-            let result = await TR064HostService.onlineMapWithError(routerIP: routerIP, username: account, password: password)
-            let elapsed = Date().timeIntervalSince(attemptStarted)
-            map = result.map
-            lastError = result.error
-
-            if map.isEmpty {
-                if let error = result.error, !error.isEmpty {
-                    await addLine("Attempt \(attempt): map is empty (failed) - error: \(error)")
-                } else {
-                    await addLine("Attempt \(attempt): map is empty (failed)")
-                }
+            do {
+                let service = FritzBoxTR064Service()
+                let devices = try await service.fetchConnectedDevices(
+                    routerIP: routerIP,
+                    username: account,
+                    password: password
+                )
+                let elapsed = Date().timeIntervalSince(attemptStarted)
+                fullHostList = devices.sorted(by: { $0.originalName < $1.originalName })
+                map = Dictionary(uniqueKeysWithValues: fullHostList.map {
+                    (
+                        $0.macAddress
+                            .lowercased()
+                            .replacingOccurrences(of: "-", with: ":"),
+                        (active: true, ip: $0.ipAddress)
+                    )
+                })
+                successAttempt = attempt
+                await addLine("Attempt \(attempt): host list has \(fullHostList.count) active entries (success)")
+                await addLine(String(format: "Attempt \(attempt): duration %.2fs", elapsed))
+                break
+            } catch {
+                let elapsed = Date().timeIntervalSince(attemptStarted)
+                lastError = error.localizedDescription
+                await addLine("Attempt \(attempt): host list failed - error: \(error.localizedDescription)")
                 await addLine(String(format: "Attempt \(attempt): duration %.2fs", elapsed))
                 if index < backoff.count - 1 {
                     await addLine("Attempt \(attempt): waiting before retry...")
                     try? await Task.sleep(for: delay)
                 }
-            } else {
-                successAttempt = attempt
-                await addLine("Attempt \(attempt): map has \(map.count) entries (success)")
-                await addLine(String(format: "Attempt \(attempt): duration %.2fs", elapsed))
-                break
             }
         }
 
         await addLine("")
-        await addLine("Host Map Overview:")
-        if map.isEmpty {
-            await addLine("- No host entries returned")
+        await addLine("Host List Overview (from device-picker flow):")
+        if fullHostList.isEmpty {
+            await addLine("- No active host entries returned")
         } else {
-            let sortedEntries = map.sorted { $0.key < $1.key }
-            for (mac, entry) in sortedEntries {
-                await addLine("- \(mac): active=\(entry.active), ip=\(entry.ip ?? "n/a")")
+            for host in fullHostList {
+                await addLine("- name=\(host.originalName), mac=\(host.macAddress), ip=\(host.ipAddress), active=1")
             }
         }
 
         await addLine("")
-        await addLine("Selected Device Speed Query (NewX_AVM-DE_Speed):")
+        await addLine("Selected Device Query (MAC/IP/Name + NewX_AVM-DE_Speed / NewX_AVM-DE_SignalStrength / NewX_AVM-DE_Mesh):")
         if monitor.localDevices.isEmpty {
             await addLine("- No local devices configured")
         } else {
-            let speedStarted = Date()
-            let speedResult = await TR064HostService.speedMapWithDiagnostics(
+            let selectedSpeedMap = await TR064HostService.speedMapWithDiagnostics(
                 routerIP: routerIP,
                 username: account,
                 password: password,
                 macAddresses: monitor.localDevices.map(\.macAddress)
             )
-            let speedElapsed = Date().timeIntervalSince(speedStarted)
-            await addLine(String(format: "- Speed query duration: %.2fs", speedElapsed))
+            let detailStarted = Date()
             for device in monitor.localDevices {
                 let state = localMapEntry(for: device.macAddress, in: map)
-                let speed = localMapEntry(for: device.macAddress, in: speedResult.speeds)
-                let diag = localMapEntry(for: device.macAddress, in: speedResult.diagnostics) ?? "no diagnostic"
-                let speedText = Formatters.localDeviceSpeed(speed)
-                let activeText = state?.active == true ? "online" : "offline"
-                await addLine("- \(device.displayName) [\(device.macAddress)] -> \(speedText), \(activeText)")
-                await addLine("  diag: \(diag)")
-                let probeLines = await TR064HostService.debugSpeedProbeLines(
+                let speedFromCurrentPath = localMapEntry(for: device.macAddress, in: selectedSpeedMap.speeds)
+                let hostFromList = fullHostList.first(where: {
+                    $0.macAddress.lowercased().replacingOccurrences(of: "-", with: ":")
+                    == device.macAddress.lowercased().replacingOccurrences(of: "-", with: ":")
+                })
+                let attrs = await TR064HostService.fetchHostDebugAttributes(
                     routerIP: routerIP,
                     username: account,
                     password: password,
-                    macAddress: device.macAddress
+                    macAddress: device.macAddress,
+                    ipAddress: state?.ip ?? hostFromList?.ipAddress
                 )
-                for probeLine in probeLines {
-                    await addLine("  raw: \(probeLine)")
+                let activeText = state?.active == true ? "online" : "offline"
+                let speedTextFromTag = attrs.speed.flatMap { Double($0) }.map(Formatters.localDeviceSpeed) ?? attrs.speed
+                let effectiveSpeedText = speedTextFromTag
+                    ?? speedFromCurrentPath.map(Formatters.localDeviceSpeed)
+                    ?? "---"
+                await addLine("- \(device.displayName) [\(device.macAddress)] -> \(activeText)")
+                await addLine("  name=\(attrs.name ?? hostFromList?.originalName ?? "n/a"), mac=\(attrs.mac ?? device.macAddress), ip=\(attrs.ip ?? state?.ip ?? hostFromList?.ipAddress ?? "n/a")")
+                await addLine("  NewX_AVM-DE_Speed=\(effectiveSpeedText), NewX_AVM-DE_SignalStrength=\(attrs.signalStrength ?? "---"), NewX_AVM-DE_Mesh=\(attrs.mesh ?? "---")")
+                await addLine("  sourceAction=\(attrs.sourceAction), interface=\(attrs.interfaceType ?? "n/a"), active=\(attrs.active ?? "n/a"), diag=\(attrs.diagnostic)")
+                if speedTextFromTag == nil, let speedFromCurrentPath {
+                    await addLine("  speedFallback=current monitor path (\(Formatters.localDeviceSpeed(speedFromCurrentPath)))")
                 }
             }
+            let detailElapsed = Date().timeIntervalSince(detailStarted)
+            await addLine(String(format: "- Per-device attribute query duration: %.2fs", detailElapsed))
         }
 
         await addLine("")

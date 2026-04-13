@@ -125,4 +125,10 @@ enum Formatters {
         }
         return String(format: "%.0f Mbit/s", speedMbps)
     }
+
+    /// Format local link speed as a plain numeric value in Mbit/s (without unit).
+    static func localDeviceSpeedPlain(_ speedMbps: Double?) -> String {
+        guard let speedMbps else { return "---" }
+        return String(format: "%.0f", speedMbps)
+    }
 }

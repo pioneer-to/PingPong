@@ -374,7 +374,17 @@ struct SettingsView: View {
                 }
             }
             .sheet(isPresented: $isShowingDevicePicker) {
-                LocalDevicePickerView(routerIP: pendingRouterIP) { selected in
+                LocalDevicePickerView(
+                    routerIP: pendingRouterIP,
+                    excludedMACs: Set(
+                        monitor.localDevices.map {
+                            $0.macAddress
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                                .lowercased()
+                                .replacingOccurrences(of: "-", with: ":")
+                        }
+                    )
+                ) { selected in
                     var updated = monitor.localDevices
                     if !updated.contains(where: { $0.macAddress == selected.macAddress }) {
                         updated.append(selected)

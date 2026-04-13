@@ -9,9 +9,29 @@ public struct TR064Host: Codable {
     public let speedMbps: Double?
 }
 
+public struct TR064HostDebugAttributes {
+    public let mac: String?
+    public let ip: String?
+    public let name: String?
+    public let active: String?
+    public let speed: String?
+    public let signalStrength: String?
+    public let mesh: String?
+    public let interfaceType: String?
+    public let sourceAction: String
+    public let diagnostic: String
+}
+
+public struct TR064WiFiAssociationInfo {
+    public let band: String?
+    public let signalStrengthPercent: Int?
+    public let ipAddress: String?
+}
+
 public enum TR064HostService {
     private static let logger = Logger(subsystem: "de.mice.fritzbox.tr064", category: "TR064HostService")
     private static let fixedRouterHost = "192.168.178.1"
+    private static let tr064DebugLoggingEnabled = false
     private static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
@@ -19,6 +39,13 @@ public enum TR064HostService {
         return URLSession(configuration: config)
     }()
     private static let hostFetchCoordinator = TR064HostFetchCoordinator()
+
+    private static func tr064DebugLog(_ message: @autoclosure () -> String) {
+        guard tr064DebugLoggingEnabled else {
+            return
+        }
+        // print(message())
+    }
 
     /// Fetch host list from Fritz!Box router using TR-064 Hosts service.
     /// - Parameters:
@@ -73,7 +100,7 @@ public enum TR064HostService {
         useHTTPS: Bool,
         allowEnumerationFallback: Bool
     ) async -> [TR064Host]? {
-        print("[TR064] fetchHostsInternal: start timeout=\(timeout) useHTTPS=\(useHTTPS) allowFallback=\(allowEnumerationFallback)")
+        tr064DebugLog("[TR064] fetchHostsInternal: start timeout=\(timeout) useHTTPS=\(useHTTPS) allowFallback=\(allowEnumerationFallback)")
         let scheme = useHTTPS ? "https" : "http"
         let port = useHTTPS ? 49443 : 49000
         let baseURLString = "\(scheme)://\(normalizedRouterHost(from: routerIP)):\(port)"
@@ -87,7 +114,7 @@ public enum TR064HostService {
         let controlPath = "/upnp/control/hosts"
         let serviceURN = "urn:dslforum-org:service:Hosts:1"
         let soapBody = ""
-        print("[TR064] step1: calling sendHostListPathSOAP")
+        tr064DebugLog("[TR064] step1: calling sendHostListPathSOAP")
         guard let soapResponse = await sendHostListPathSOAP(
             baseURL: baseURL,
             controlPath: controlPath,
@@ -97,7 +124,7 @@ public enum TR064HostService {
             password: password,
             timeout: timeout
         ) else {
-            print("[TR064] step1: FAILED - soapResponse nil, entering fallback")
+            tr064DebugLog("[TR064] step1: FAILED - soapResponse nil, entering fallback")
             logger.debug("SOAP host-list-path actions failed, fallback to host enumeration")
             guard allowEnumerationFallback else { return nil }
             return await fetchHostsByEnumeration(
@@ -107,12 +134,12 @@ public enum TR064HostService {
                 timeout: timeout
             )
         }
-        print("[TR064] step1: SUCCESS - \(soapResponse.count) bytes")
+        tr064DebugLog("[TR064] step1: SUCCESS - \(soapResponse.count) bytes")
 
         // Step 2: Parse SOAP response XML for NewX_AVM-DE_HostListPath or NewHostListPath
-        print("[TR064] step2: parsing host list path")
+        tr064DebugLog("[TR064] step2: parsing host list path")
         guard let hostListPath = parseHostListPath(fromSOAPResponse: soapResponse) else {
-            print("[TR064] step2: FAILED - no path found in SOAP response")
+            tr064DebugLog("[TR064] step2: FAILED - no path found in SOAP response")
             logger.debug("No host list path found in SOAP response, fallback to host enumeration")
             guard allowEnumerationFallback else { return nil }
             return await fetchHostsByEnumeration(
@@ -122,7 +149,7 @@ public enum TR064HostService {
                 timeout: timeout
             )
         }
-        print("[TR064] step2: SUCCESS - path=\(hostListPath)")
+        tr064DebugLog("[TR064] step2: SUCCESS - path=\(hostListPath)")
 
         // Step 3: Extract SID from host list path and query /data.lua on port 80.
         guard let sid = extractSID(from: hostListPath) else {
@@ -134,7 +161,7 @@ public enum TR064HostService {
             logger.error("Invalid data.lua URL for host: \(routerHost, privacy: .public)")
             return nil
         }
-        print("[TR064] step3: fetching \(dataURL.absoluteString)")
+        tr064DebugLog("[TR064] step3: fetching \(dataURL.absoluteString)")
 
         do {
             var request = URLRequest(url: dataURL)
@@ -147,7 +174,7 @@ public enum TR064HostService {
                 return nil
             }
             let hosts = parseHostsFromDataLua(data: data)
-            print("[TR064] step3: SUCCESS - \(data.count) bytes, \(hosts?.count ?? 0) hosts parsed")
+            tr064DebugLog("[TR064] step3: SUCCESS - \(data.count) bytes, \(hosts?.count ?? 0) hosts parsed")
             if let hosts {
                 return hosts
             }
@@ -160,7 +187,7 @@ public enum TR064HostService {
                 timeout: timeout
             )
         } catch {
-            print("[TR064] step3: FAILED - \(error)")
+            tr064DebugLog("[TR064] step3: FAILED - \(error)")
             logger.error("Failed to POST data.lua at \(dataURL.absoluteString, privacy: .public): \(error.localizedDescription, privacy: .public)")
             guard allowEnumerationFallback else { return nil }
             return await fetchHostsByEnumeration(
@@ -216,7 +243,7 @@ public enum TR064HostService {
         do {
             let decoded = try JSONDecoder().decode(DataLuaResponse.self, from: data)
             let devices = decoded.data?.active ?? []
-            print("[TR064] parseHostsFromDataLua: decoded \(devices.count) active devices")
+            tr064DebugLog("[TR064] parseHostsFromDataLua: decoded \(devices.count) active devices")
             return devices.compactMap { device in
                 guard let mac = device.mac, !mac.isEmpty else { return nil }
                 return TR064Host(
@@ -228,7 +255,7 @@ public enum TR064HostService {
                 )
             }
         } catch {
-            print("[TR064] parseHostsFromDataLua FAILED: \(error)")
+            tr064DebugLog("[TR064] parseHostsFromDataLua FAILED: \(error)")
             return nil
         }
     }
@@ -790,7 +817,7 @@ public enum TR064HostService {
     ) async -> Data? {
         let actions = ["X_AVM-DE_GetHostListPath", "GetHostListPath"]
         for action in actions {
-            print("[TR064] sendHostListPathSOAP: trying action \(action)")
+            tr064DebugLog("[TR064] sendHostListPathSOAP: trying action \(action)")
             if let response = await sendSOAP(
                 baseURL: baseURL,
                 controlPath: controlPath,
@@ -801,10 +828,10 @@ public enum TR064HostService {
                 password: password,
                 timeout: timeout
             ) {
-                print("[TR064] sendHostListPathSOAP: action \(action) returned \(response.count) bytes")
+                tr064DebugLog("[TR064] sendHostListPathSOAP: action \(action) returned \(response.count) bytes")
                 return response
             }
-            print("[TR064] sendHostListPathSOAP: action \(action) returned nil")
+            tr064DebugLog("[TR064] sendHostListPathSOAP: action \(action) returned nil")
         }
         return nil
     }
@@ -860,7 +887,7 @@ public enum TR064HostService {
         password: String,
         timeout: TimeInterval
     ) async -> (hosts: [TR064Host]?, error: String?) {
-        print("[TR064] fetchHostsByEnumeration: start")
+        tr064DebugLog("[TR064] fetchHostsByEnumeration: start")
         let serviceURN = "urn:dslforum-org:service:Hosts:1"
 
         let numberOfEntriesResult = await sendSOAPWithError(
@@ -884,7 +911,7 @@ public enum TR064HostService {
         else {
             return (nil, "Failed to parse NewHostNumberOfEntries")
         }
-        print("[TR064] fetchHostsByEnumeration: \(count) hosts to enumerate")
+        tr064DebugLog("[TR064] fetchHostsByEnumeration: \(count) hosts to enumerate")
 
         if count <= 0 {
             return ([], nil)
@@ -1070,6 +1097,238 @@ public enum TR064HostService {
         }
         return tags
     }
+
+    public static func wifiAssociationMap(
+        routerIP: String,
+        username: String,
+        password: String,
+        macAddresses: [String]
+    ) async -> [String: TR064WiFiAssociationInfo] {
+        let targetKeys = Set(macAddresses.map(normalizeMACToKey))
+        guard !targetKeys.isEmpty else { return [:] }
+        let routerHost = normalizedRouterHost(from: routerIP)
+        guard let baseURL = URL(string: "http://\(routerHost):49000") else { return [:] }
+
+        let bandByIndex: [Int: String] = [
+            1: "2.4GHz",
+            2: "5GHz",
+            3: "6GHz"
+        ]
+        var map: [String: TR064WiFiAssociationInfo] = [:]
+
+        for wlanIndex in [1, 2, 3] {
+            let controlPath = "/upnp/control/wlanconfig\(wlanIndex)"
+            var selectedVersion: Int?
+            var totalAssociations = 0
+
+            for version in [1, 2, 3] {
+                let serviceURN = "urn:dslforum-org:service:WLANConfiguration:\(version)"
+                let response = await sendSOAPWithError(
+                    baseURL: baseURL,
+                    controlPath: controlPath,
+                    serviceURN: serviceURN,
+                    action: "GetTotalAssociations",
+                    bodyArgs: "",
+                    username: username,
+                    password: password,
+                    timeout: 5
+                )
+                guard let data = response.data else { continue }
+                let xml = String(data: data, encoding: .utf8) ?? ""
+                guard
+                    let totalRaw = extractXMLTag(xml, tag: "NewTotalAssociations"),
+                    let total = Int(totalRaw),
+                    total >= 0
+                else {
+                    continue
+                }
+                selectedVersion = version
+                totalAssociations = total
+                break
+            }
+
+            guard let version = selectedVersion, totalAssociations > 0 else { continue }
+            let serviceURN = "urn:dslforum-org:service:WLANConfiguration:\(version)"
+            let band = bandByIndex[wlanIndex]
+
+            for deviceIndex in 0..<totalAssociations {
+                let bodyArgs = "<NewAssociatedDeviceIndex>\(deviceIndex)</NewAssociatedDeviceIndex>"
+                let response = await sendSOAPWithError(
+                    baseURL: baseURL,
+                    controlPath: controlPath,
+                    serviceURN: serviceURN,
+                    action: "GetGenericAssociatedDeviceInfo",
+                    bodyArgs: bodyArgs,
+                    username: username,
+                    password: password,
+                    timeout: 5
+                )
+                guard let data = response.data else { continue }
+                let xml = String(data: data, encoding: .utf8) ?? ""
+                guard let mac = extractXMLTag(xml, tag: "NewAssociatedDeviceMACAddress") else { continue }
+                let key = normalizeMACToKey(mac)
+                guard targetKeys.contains(key) else { continue }
+
+                let signalRaw = extractXMLTag(xml, tag: "NewX_AVM-DE_SignalStrength")
+                    ?? extractXMLTag(xml, tag: "NewX_AVM_DE_SignalStrength")
+                    ?? extractXMLTag(xml, tag: "X_AVM-DE_SignalStrength")
+                    ?? extractXMLTag(xml, tag: "X_AVM_DE_SignalStrength")
+                let signal = parseSignalPercent(from: signalRaw)
+                let ip = extractXMLTag(xml, tag: "NewAssociatedDeviceIPAddress")
+
+                if let existing = map[key] {
+                    let preferredSignal = max(existing.signalStrengthPercent ?? Int.min, signal ?? Int.min)
+                    map[key] = TR064WiFiAssociationInfo(
+                        band: existing.band ?? band,
+                        signalStrengthPercent: preferredSignal == Int.min ? nil : preferredSignal,
+                        ipAddress: existing.ipAddress ?? ip
+                    )
+                } else {
+                    map[key] = TR064WiFiAssociationInfo(
+                        band: band,
+                        signalStrengthPercent: signal,
+                        ipAddress: ip
+                    )
+                }
+            }
+        }
+
+        return map
+    }
+
+    private static func parseSignalPercent(from raw: String?) -> Int? {
+        guard let raw else { return nil }
+        if let direct = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return max(0, min(100, direct))
+        }
+        guard
+            let regex = try? NSRegularExpression(pattern: "([0-9]{1,3})"),
+            let match = regex.firstMatch(in: raw, range: NSRange(raw.startIndex..<raw.endIndex, in: raw)),
+            let range = Range(match.range(at: 1), in: raw),
+            let value = Int(String(raw[range]))
+        else {
+            return nil
+        }
+        return max(0, min(100, value))
+    }
+
+    public static func fetchHostDebugAttributes(
+        routerIP: String,
+        username: String,
+        password: String,
+        macAddress: String,
+        ipAddress: String?
+    ) async -> TR064HostDebugAttributes {
+        let routerHost = normalizedRouterHost(from: routerIP)
+        guard let baseURL = URL(string: "http://\(routerHost):49000") else {
+            return TR064HostDebugAttributes(
+                mac: nil, ip: nil, name: nil, active: nil,
+                speed: nil, signalStrength: nil, mesh: nil, interfaceType: nil,
+                sourceAction: "none",
+                diagnostic: "invalid base URL"
+            )
+        }
+        let serviceURN = "urn:dslforum-org:service:Hosts:1"
+        let normalizedMac = normalizedKeyToColonMAC(normalizeMACToKey(macAddress))
+
+        func attributesFromXML(_ xml: String, sourceAction: String, diagnostic: String) -> TR064HostDebugAttributes {
+            let speed = extractXMLTag(xml, tag: "NewX_AVM-DE_Speed")
+                ?? extractXMLTag(xml, tag: "NewX_AVM_DE_Speed")
+                ?? extractXMLTag(xml, tag: "X_AVM-DE_Speed")
+                ?? extractXMLTag(xml, tag: "X_AVM_DE_Speed")
+                ?? extractXMLTag(xml, tag: "NewSpeed")
+            let signal = extractXMLTag(xml, tag: "NewX_AVM-DE_SignalStrength")
+                ?? extractXMLTag(xml, tag: "NewX_AVM_DE_SignalStrength")
+                ?? extractXMLTag(xml, tag: "X_AVM-DE_SignalStrength")
+                ?? extractXMLTag(xml, tag: "X_AVM_DE_SignalStrength")
+            let mesh = extractXMLTag(xml, tag: "NewX_AVM-DE_Mesh")
+                ?? extractXMLTag(xml, tag: "NewX_AVM_DE_Mesh")
+                ?? extractXMLTag(xml, tag: "X_AVM-DE_Mesh")
+                ?? extractXMLTag(xml, tag: "X_AVM_DE_Mesh")
+
+            return TR064HostDebugAttributes(
+                mac: extractXMLTag(xml, tag: "NewMACAddress"),
+                ip: extractXMLTag(xml, tag: "NewIPAddress"),
+                name: extractXMLTag(xml, tag: "NewHostName"),
+                active: extractXMLTag(xml, tag: "NewActive"),
+                speed: speed,
+                signalStrength: signal,
+                mesh: mesh,
+                interfaceType: extractXMLTag(xml, tag: "NewInterfaceType"),
+                sourceAction: sourceAction,
+                diagnostic: diagnostic
+            )
+        }
+
+        let attempts: [(action: String, bodyArgs: String)] = {
+            var list: [(String, String)] = []
+            // Prefer AVM-specific action first because it is most likely to expose
+            // NewX_AVM-DE_* fields on Fritz!Box firmwares.
+            list.append(("X_AVM-DE_GetSpecificHostEntryByMACAddress", "<NewMACAddress>\(normalizedMac)</NewMACAddress>"))
+            if let ipAddress, !ipAddress.isEmpty {
+                list.append(("GetSpecificHostEntry", "<NewIPAddress>\(ipAddress)</NewIPAddress>"))
+            }
+            list.append(("GetSpecificHostEntry", "<NewMACAddress>\(normalizedMac)</NewMACAddress>"))
+            return list
+        }()
+
+        var lastError = "no response"
+        var bestCandidate: TR064HostDebugAttributes?
+        for attempt in attempts {
+            let response = await sendSOAPWithError(
+                baseURL: baseURL,
+                controlPath: "/upnp/control/hosts",
+                serviceURN: serviceURN,
+                action: attempt.action,
+                bodyArgs: attempt.bodyArgs,
+                username: username,
+                password: password,
+                timeout: 5
+            )
+            if let data = response.data, let xml = String(data: data, encoding: .utf8), !xml.isEmpty {
+                let candidate = attributesFromXML(
+                    xml,
+                    sourceAction: attempt.action,
+                    diagnostic: response.error ?? "ok"
+                )
+                let hasDesiredField = candidate.speed != nil || candidate.signalStrength != nil || candidate.mesh != nil
+                if hasDesiredField {
+                    return candidate
+                }
+                // Keep the richest fallback candidate if no desired fields were found.
+                if bestCandidate == nil {
+                    bestCandidate = candidate
+                }
+                continue
+            }
+            if let error = response.error, !error.isEmpty {
+                lastError = error
+            }
+        }
+
+        if let bestCandidate {
+            return TR064HostDebugAttributes(
+                mac: bestCandidate.mac,
+                ip: bestCandidate.ip,
+                name: bestCandidate.name,
+                active: bestCandidate.active,
+                speed: bestCandidate.speed,
+                signalStrength: bestCandidate.signalStrength,
+                mesh: bestCandidate.mesh,
+                interfaceType: bestCandidate.interfaceType,
+                sourceAction: bestCandidate.sourceAction,
+                diagnostic: bestCandidate.diagnostic.isEmpty ? lastError : bestCandidate.diagnostic
+            )
+        }
+
+        return TR064HostDebugAttributes(
+            mac: nil, ip: nil, name: nil, active: nil,
+            speed: nil, signalStrength: nil, mesh: nil, interfaceType: nil,
+            sourceAction: "none",
+            diagnostic: lastError
+        )
+    }
+
     public static func debugSpeedProbeLines(
         routerIP: String,
         username: String,

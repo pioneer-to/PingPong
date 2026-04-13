@@ -4,9 +4,11 @@ struct LocalDevicePickerView: View {
     @Environment(\.dismiss) private var dismiss
     
     let routerIP: String
+    let excludedMACs: Set<String>
     var onSelect: (LocalNetworkDevice) -> Void
     
     @State private var devices: [LocalNetworkDevice] = []
+    @State private var fetchedTotalDeviceCount: Int = 0
     @State private var isLoading = false
     @State private var errorMessage: String?
     
@@ -39,7 +41,9 @@ struct LocalDevicePickerView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if devices.isEmpty {
-                Text("No active devices found on the network.")
+                Text(fetchedTotalDeviceCount > 0
+                     ? "No other devices found to add."
+                     : "No active devices found on the network.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -91,6 +95,7 @@ struct LocalDevicePickerView: View {
             isLoading = true
             errorMessage = nil
             devices = []
+            fetchedTotalDeviceCount = 0
         }
 
         while true {
@@ -111,8 +116,11 @@ struct LocalDevicePickerView: View {
                     username: username,
                     password: password
                 )
+                let excluded = Set(excludedMACs.map(normalizedMAC))
+                let filtered = activeDevices.filter { !excluded.contains(normalizedMAC($0.macAddress)) }
                 await MainActor.run {
-                    self.devices = activeDevices.sorted(by: { $0.originalName < $1.originalName })
+                    self.fetchedTotalDeviceCount = activeDevices.count
+                    self.devices = filtered.sorted(by: { $0.originalName < $1.originalName })
                     self.isLoading = false
                     self.errorMessage = nil
                 }
@@ -150,5 +158,12 @@ struct LocalDevicePickerView: View {
                 }
             }
         }
+    }
+
+    private func normalizedMAC(_ input: String) -> String {
+        input
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: ":")
     }
 }

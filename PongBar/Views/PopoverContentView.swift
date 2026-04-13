@@ -13,6 +13,7 @@ enum PopoverPage: Equatable {
     case main
     case history
     case targetDetail(PingTarget, String)
+    case localDeviceSpeedDetail(LocalNetworkDevice)
     case traceroute(String)
     case mtr(String)
     case networkMap(String)
@@ -31,6 +32,8 @@ struct PopoverContentView: View {
                 IncidentHistoryView(goBack: goBack)
             case .targetDetail(let target, let detail):
                 TargetDetailView(target: target, detail: detail, goBack: goBack, navigate: navigate)
+            case .localDeviceSpeedDetail(let device):
+                LocalDeviceSpeedDetailView(device: device, goBack: goBack)
             case .traceroute(let host):
                 TracerouteView(host: host, goBack: goBack)
             case .mtr(let host):
@@ -67,4 +70,3 @@ struct PopoverContentView: View {
         .environment(monitor)
         .frame(width: 360)
 }
-
