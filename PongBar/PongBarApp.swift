@@ -7,8 +7,15 @@ import SwiftUI
 import AppKit
 
 @MainActor
+@Observable
+final class PopoverState {
+    var isVisible: Bool = false
+}
+
+@MainActor
 private enum AppContainer {
     static let monitor = NetworkMonitor()
+    static let popoverState = PopoverState()
 }
 
 /// Main entry point for the PongBar menu bar application.
@@ -26,12 +33,16 @@ struct PongBarApp: App {
 }
 
 @MainActor
-final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
+final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private var updateTimer: Timer?
     private let ballAnimator = MenuBarBallAnimator()
     private let sounds = SoundManager.shared
+
+    private var cachedSpeedUp: (String, String, Int)?
+    private var cachedSpeedDown: (String, String, Int)?
+    private var cachedSpeedString: NSAttributedString?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -50,9 +61,11 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
 
         let root = PopoverContentView()
             .environment(AppContainer.monitor)
+            .environment(AppContainer.popoverState)
             .frame(minWidth: 450, idealWidth: 540)
         popover.contentViewController = NSHostingController(rootView: root)
         popover.behavior = .transient
+        popover.delegate = self
 
         updateStatusItem()
         ballAnimator.onAudibleBounce = { [weak self] boundary in
@@ -68,6 +81,14 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         updateTimer?.invalidate()
         updateTimer = nil
+    }
+
+    func popoverWillShow(_ notification: Notification) {
+        AppContainer.popoverState.isVisible = true
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        AppContainer.popoverState.isVisible = false
     }
 
     @objc private func togglePopover(_ sender: AnyObject?) {
@@ -124,7 +145,16 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
             statusItem?.length = NSStatusItem.variableLength
             let up = internetDotIsRed ? ("0", "B", 0) : Self.speedParts(uploadBytesPerSecond)
             let down = internetDotIsRed ? ("0", "B", 0) : Self.speedParts(downloadBytesPerSecond)
-            button.attributedTitle = Self.attributedTwoLineSpeed(up: up, down: down)
+            
+            if let cachedUp = cachedSpeedUp, let cachedDown = cachedSpeedDown, up == cachedUp, down == cachedDown, let cached = cachedSpeedString {
+                button.attributedTitle = cached
+            } else {
+                let string = Self.attributedTwoLineSpeed(up: up, down: down)
+                cachedSpeedUp = up
+                cachedSpeedDown = down
+                cachedSpeedString = string
+                button.attributedTitle = string
+            }
         default:
             statusItem?.length = NSStatusItem.squareLength
             button.attributedTitle = NSAttributedString(string: "")
