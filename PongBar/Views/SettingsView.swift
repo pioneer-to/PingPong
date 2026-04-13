@@ -17,6 +17,10 @@ struct SettingsView: View {
     @AppStorage("launchAtLogin") private var launchAtLogin: Bool = false
     @AppStorage("showPublicIP") private var showPublicIP: Bool = true
     @AppStorage("menuBarDisplayMode") private var menuBarDisplayMode: String = "dot"
+    @AppStorage(Config.Keys.localDeviceSpeedInterval) private var localDeviceSpeedInterval: Double = Config.Defaults.localDeviceSpeedInterval
+    @AppStorage(Config.Keys.speedQualityLowThreshold) private var speedQualityLowThreshold: Double = Config.Defaults.speedQualityLowThreshold
+    @AppStorage(Config.Keys.speedQualityMediumThreshold) private var speedQualityMediumThreshold: Double = Config.Defaults.speedQualityMediumThreshold
+    @AppStorage(Config.Keys.speedQualityHighThreshold) private var speedQualityHighThreshold: Double = Config.Defaults.speedQualityHighThreshold
 
     // Local network credentials
     @AppStorage("local.username") private var localUsername: String = ""
@@ -307,8 +311,31 @@ struct SettingsView: View {
 
             Section("Devices to Monitor") {
                 HStack {
+                    Text("Speed refresh interval")
+                    Spacer()
+                    Picker("", selection: $localDeviceSpeedInterval) {
+                        Text("5s").tag(5.0)
+                        Text("10s").tag(10.0)
+                        Text("30s").tag(30.0)
+                        Text("60s").tag(60.0)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 220)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Speed quality levels")
+                        .font(.body.weight(.medium))
+                    SpeedQualityLevelsView(
+                        lowThreshold: $speedQualityLowThreshold,
+                        mediumThreshold: $speedQualityMediumThreshold,
+                        highThreshold: $speedQualityHighThreshold
+                    )
+                }
+
+                HStack {
                     Button {
-                        pendingRouterIP = "192.168.178.1"
+                        pendingRouterIP = guessedRouterIP(from: monitor.gatewayIP)
                         isShowingDevicePicker = true
                     } label: {
                         Label("Add Device", systemImage: "plus.circle")
@@ -354,6 +381,10 @@ struct SettingsView: View {
             let valid = Set(newDevices.map { $0.id.uuidString })
             localSelectedDeviceIDs = localSelectedDeviceIDs.intersection(valid)
         }
+        .onChange(of: localDeviceSpeedInterval) { _, newValue in
+            monitor.localDeviceSpeedInterval = newValue
+            monitor.restartLocalDeviceSpeedMonitoring()
+        }
     }
 
     // Minimal helper to avoid complex inline closures in the view builder
@@ -368,6 +399,34 @@ struct SettingsView: View {
                 }
             }
         )
+    }
+
+    private func guessedRouterIP(from gateway: String) -> String {
+        if isPrivateIPv4(gateway) {
+            return gateway
+        }
+        return "192.168.178.1"
+    }
+
+    private func isPrivateIPv4(_ ip: String) -> Bool {
+        ip.hasPrefix("192.168.")
+        || ip.hasPrefix("10.")
+        || ip.hasPrefix("172.16.")
+        || ip.hasPrefix("172.17.")
+        || ip.hasPrefix("172.18.")
+        || ip.hasPrefix("172.19.")
+        || ip.hasPrefix("172.20.")
+        || ip.hasPrefix("172.21.")
+        || ip.hasPrefix("172.22.")
+        || ip.hasPrefix("172.23.")
+        || ip.hasPrefix("172.24.")
+        || ip.hasPrefix("172.25.")
+        || ip.hasPrefix("172.26.")
+        || ip.hasPrefix("172.27.")
+        || ip.hasPrefix("172.28.")
+        || ip.hasPrefix("172.29.")
+        || ip.hasPrefix("172.30.")
+        || ip.hasPrefix("172.31.")
     }
 
     // MARK: - DNS
@@ -704,8 +763,7 @@ private struct LocalDevicesEditor: View {
                 ForEach(monitor.localDevices) { device in
                     LocalDeviceSettingsRow(
                         device: device,
-                        result: monitor.localResults[device.id],
-                        sparklineData: monitor.localLatencyHistory[device.id] ?? []
+                        result: monitor.localResults[device.id]
                     ) {
                         draggedDeviceID = device.id
                         return NSItemProvider(object: device.id.uuidString as NSString)
@@ -762,7 +820,6 @@ private struct LocalDeviceSettingsRow: View {
     @Environment(NetworkMonitor.self) private var monitor
     let device: LocalNetworkDevice
     let result: PingResult?
-    let sparklineData: [Double?]
     let onDragStart: () -> NSItemProvider
 
     @State private var isEditingName = false
@@ -840,14 +897,10 @@ private struct LocalDeviceSettingsRow: View {
 
             Spacer()
 
-            Toggle("Use Ping", isOn: Binding(
-                get: { device.usePing },
-                set: { newValue in
-                    setUsePing(newValue)
-                }
-            ))
-            .toggleStyle(.switch)
-            .controlSize(.small)
+            Text(Formatters.localDeviceSpeed(monitor.localSpeeds[device.id]))
+                .font(.system(.caption, design: .monospaced))
+                .monospacedDigit()
+                .foregroundStyle(speedColor)
 
             Button {
                 removeDevice()
@@ -864,6 +917,11 @@ private struct LocalDeviceSettingsRow: View {
     private var statusColor: Color {
         guard let result else { return .secondary }
         return result.isReachable ? .green : .red
+    }
+
+    private var speedColor: Color {
+        guard let speed = monitor.localSpeeds[device.id] else { return .secondary }
+        return speed.localSpeedQualityColor
     }
 
     private func commitName() {
@@ -906,13 +964,6 @@ private struct LocalDeviceSettingsRow: View {
         value
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .filter { $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }
-    }
-
-    private func setUsePing(_ enabled: Bool) {
-        guard let index = monitor.localDevices.firstIndex(where: { $0.id == device.id }) else { return }
-        var updated = monitor.localDevices
-        updated[index].usePing = enabled
-        monitor.saveLocalDevices(updated)
     }
 
     private func removeDevice() {
@@ -1027,6 +1078,208 @@ private struct DeviceSymbolPicker: View {
         customSymbolName = sanitized
         onSelect(sanitized)
     }
+}
+
+private struct SpeedQualityLevelsView: View {
+    @Binding var lowThreshold: Double
+    @Binding var mediumThreshold: Double
+    @Binding var highThreshold: Double
+
+    private let maxValue: Double = 1000
+    private let step: Double = 10
+    @State private var lowDragStart: Double?
+    @State private var mediumDragStart: Double?
+    @State private var highDragStart: Double?
+    @State private var lowDragUpperBound: Double?
+    @State private var mediumDragLowerBound: Double?
+    @State private var mediumDragUpperBound: Double?
+    @State private var highDragLowerBound: Double?
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = max(1, geometry.size.width)
+
+            ZStack(alignment: .topLeading) {
+                Text("0")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .position(x: 6, y: 8)
+
+                Text(">1 Gbit/s")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .position(x: width - 34, y: 8)
+
+                Path { path in
+                    for tick in stride(from: 0.0, through: maxValue, by: 100) {
+                        let x = positionX(for: tick, width: width)
+                        path.move(to: CGPoint(x: x, y: 16))
+                        path.addLine(to: CGPoint(x: x, y: 21))
+                    }
+                }
+                .stroke(Color.secondary.opacity(0.45), lineWidth: 1)
+
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(.red)
+                        .frame(width: max(0, positionX(for: lowThreshold, width: width)), height: 12)
+
+                    RoundedRectangle(cornerRadius: 0)
+                        .fill(.orange)
+                        .frame(
+                            width: max(0, positionX(for: mediumThreshold, width: width) - positionX(for: lowThreshold, width: width)),
+                            height: 12
+                        )
+                        .offset(x: positionX(for: lowThreshold, width: width))
+
+                    RoundedRectangle(cornerRadius: 0)
+                        .fill(.yellow)
+                        .frame(
+                            width: max(0, positionX(for: highThreshold, width: width) - positionX(for: mediumThreshold, width: width)),
+                            height: 12
+                        )
+                        .offset(x: positionX(for: mediumThreshold, width: width))
+
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(.green)
+                        .frame(width: max(0, width - positionX(for: highThreshold, width: width)), height: 12)
+                        .offset(x: positionX(for: highThreshold, width: width))
+                }
+                .frame(width: width, height: 12, alignment: .leading)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.secondary.opacity(0.35), lineWidth: 1)
+                )
+                .position(x: width / 2, y: 30)
+
+                thresholdHandle(index: 0, value: $lowThreshold, width: width)
+                    .position(x: positionX(for: lowThreshold, width: width), y: 30)
+                    .zIndex(1)
+
+                thresholdHandle(index: 1, value: $mediumThreshold, width: width)
+                    .position(x: positionX(for: mediumThreshold, width: width), y: 30)
+                    .zIndex(2)
+
+                thresholdHandle(index: 2, value: $highThreshold, width: width)
+                    .position(x: positionX(for: highThreshold, width: width), y: 30)
+                    .zIndex(3)
+
+                thresholdField(index: 0, value: $lowThreshold)
+                    .position(x: positionX(for: lowThreshold, width: width), y: 52)
+
+                thresholdField(index: 1, value: $mediumThreshold)
+                    .position(x: positionX(for: mediumThreshold, width: width), y: 52)
+
+                thresholdField(index: 2, value: $highThreshold)
+                    .position(x: positionX(for: highThreshold, width: width), y: 52)
+            }
+        }
+        .frame(height: 64)
+    }
+
+    private func thresholdHandle(index: Int, value: Binding<Double>, width: Double) -> some View {
+        Circle()
+            .fill(.white)
+            .frame(width: 14, height: 14)
+            .overlay(
+                Circle()
+                    .stroke(Color.primary.opacity(0.8), lineWidth: 1.5)
+            )
+            .shadow(color: .black.opacity(0.15), radius: 1, x: 0, y: 1)
+            .contentShape(Rectangle().inset(by: -10))
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { drag in
+                        let startValue: Double
+                        switch index {
+                        case 0:
+                            if lowDragStart == nil { lowDragStart = value.wrappedValue }
+                            if lowDragUpperBound == nil { lowDragUpperBound = mediumThreshold }
+                            startValue = lowDragStart ?? value.wrappedValue
+                        case 1:
+                            if mediumDragStart == nil { mediumDragStart = value.wrappedValue }
+                            if mediumDragLowerBound == nil { mediumDragLowerBound = lowThreshold }
+                            if mediumDragUpperBound == nil { mediumDragUpperBound = highThreshold }
+                            startValue = mediumDragStart ?? value.wrappedValue
+                        default:
+                            if highDragStart == nil { highDragStart = value.wrappedValue }
+                            if highDragLowerBound == nil { highDragLowerBound = mediumThreshold }
+                            startValue = highDragStart ?? value.wrappedValue
+                        }
+
+                        let deltaValue = (drag.translation.width / max(1, width)) * maxValue
+                        let raw = startValue + deltaValue
+                        switch index {
+                        case 0:
+                            value.wrappedValue = min(max(raw, 0), lowDragUpperBound ?? mediumThreshold)
+                        case 1:
+                            value.wrappedValue = min(
+                                max(raw, mediumDragLowerBound ?? lowThreshold),
+                                mediumDragUpperBound ?? highThreshold
+                            )
+                        default:
+                            value.wrappedValue = min(max(raw, highDragLowerBound ?? mediumThreshold), maxValue)
+                        }
+                    }
+                    .onEnded { _ in
+                        switch index {
+                        case 0:
+                            value.wrappedValue = snapped(value.wrappedValue)
+                            mediumThreshold = max(mediumThreshold, value.wrappedValue)
+                            lowDragStart = nil
+                            lowDragUpperBound = nil
+                        case 1:
+                            value.wrappedValue = snapped(value.wrappedValue)
+                            value.wrappedValue = min(max(value.wrappedValue, lowThreshold), highThreshold)
+                            mediumDragStart = nil
+                            mediumDragLowerBound = nil
+                            mediumDragUpperBound = nil
+                        default:
+                            value.wrappedValue = snapped(value.wrappedValue)
+                            value.wrappedValue = max(value.wrappedValue, mediumThreshold)
+                            highDragStart = nil
+                            highDragLowerBound = nil
+                        }
+                    }
+            )
+    }
+
+    private func thresholdField(index: Int, value: Binding<Double>) -> some View {
+        let binding = Binding<Double>(
+            get: { value.wrappedValue },
+            set: { newValue in
+                let snappedValue = snapped(newValue)
+                switch index {
+                case 0:
+                    let next = min(max(0, snappedValue), mediumThreshold)
+                    value.wrappedValue = next
+                    mediumThreshold = max(mediumThreshold, next)
+                    highThreshold = max(highThreshold, mediumThreshold)
+                case 1:
+                    let next = min(max(lowThreshold, snappedValue), highThreshold)
+                    value.wrappedValue = next
+                default:
+                    let next = min(max(mediumThreshold, snappedValue), maxValue)
+                    value.wrappedValue = next
+                }
+            }
+        )
+        return TextField("", value: binding, format: .number.precision(.fractionLength(0)))
+            .textFieldStyle(.roundedBorder)
+            .font(.caption2.monospaced())
+            .multilineTextAlignment(.center)
+            .frame(width: 54)
+    }
+
+    private func snapped(_ value: Double) -> Double {
+        max(0, min(maxValue, (value / step).rounded() * step))
+    }
+
+    private func positionX(for value: Double, width: Double) -> Double {
+        (max(0, min(maxValue, value)) / maxValue) * width
+    }
+
 }
 
 #Preview("SettingsView") {

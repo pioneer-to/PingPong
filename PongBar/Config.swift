@@ -18,6 +18,12 @@ enum Config {
         return val > 0 ? val : Defaults.pingInterval
     }
 
+    /// Local device speed refresh interval in seconds.
+    static var localDeviceSpeedInterval: TimeInterval {
+        let val = UserDefaults.standard.double(forKey: Keys.localDeviceSpeedInterval)
+        return val > 0 ? val : Defaults.localDeviceSpeedInterval
+    }
+
     /// Ping timeout in seconds (clamped 1 to pingInterval).
     static var pingTimeout: Int {
         let val = UserDefaults.standard.integer(forKey: Keys.pingTimeout).nonZero ?? Defaults.pingTimeout
@@ -196,6 +202,20 @@ enum Config {
     static var tracerouteTimeout: Int {
         UserDefaults.standard.integer(forKey: Keys.tracerouteTimeout).nonZero ?? Defaults.tracerouteTimeout
     }
+
+    // MARK: - Local Device Speed Quality (Mbit/s)
+
+    static var speedQualityLowThreshold: Double {
+        UserDefaults.standard.doubleOrNil(forKey: Keys.speedQualityLowThreshold) ?? Defaults.speedQualityLowThreshold
+    }
+
+    static var speedQualityMediumThreshold: Double {
+        UserDefaults.standard.doubleOrNil(forKey: Keys.speedQualityMediumThreshold) ?? Defaults.speedQualityMediumThreshold
+    }
+
+    static var speedQualityHighThreshold: Double {
+        UserDefaults.standard.doubleOrNil(forKey: Keys.speedQualityHighThreshold) ?? Defaults.speedQualityHighThreshold
+    }
 }
 
 // MARK: - Default Values
@@ -203,6 +223,7 @@ enum Config {
 extension Config {
     enum Defaults {
         static let pingInterval: TimeInterval = 3.0
+        static let localDeviceSpeedInterval: TimeInterval = 60.0
         static let pingTimeout: Int = 2
         static let dnsTimeout: Int = 3
 
@@ -235,6 +256,9 @@ extension Config {
 
         static let tracerouteMaxHops: Int = 20
         static let tracerouteTimeout: Int = 2
+        static let speedQualityLowThreshold: Double = 50
+        static let speedQualityMediumThreshold: Double = 150
+        static let speedQualityHighThreshold: Double = 400
 
         static let networkSwitchGracePings: Int = 3
 
@@ -259,6 +283,7 @@ extension Config {
 extension Config {
     enum Keys {
         static let pingInterval = "pingInterval"
+        static let localDeviceSpeedInterval = "localDeviceSpeedInterval"
         static let pingTimeout = "pingTimeout"
         static let dnsTimeout = "dnsTimeout"
 
@@ -299,6 +324,9 @@ extension Config {
         static let diagnosticRecentIncidents = "diagnosticRecentIncidents"
         static let tracerouteMaxHops = "tracerouteMaxHops"
         static let tracerouteTimeout = "tracerouteTimeout"
+        static let speedQualityLowThreshold = "speedQualityLowThreshold"
+        static let speedQualityMediumThreshold = "speedQualityMediumThreshold"
+        static let speedQualityHighThreshold = "speedQualityHighThreshold"
         
         static let fritzUsername = "fritzUsername"
         static let fritzPassword = "fritzPassword"

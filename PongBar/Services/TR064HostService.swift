@@ -6,10 +6,12 @@ public struct TR064Host: Codable {
     public let ip: String?
     public let active: Bool
     public let name: String?
+    public let speedMbps: Double?
 }
 
 public enum TR064HostService {
     private static let logger = Logger(subsystem: "de.mice.fritzbox.tr064", category: "TR064HostService")
+    private static let fixedRouterHost = "192.168.178.1"
 
     /// Fetch host list from Fritz!Box router using TR-064 Hosts service.
     /// - Parameters:
@@ -24,23 +26,29 @@ public enum TR064HostService {
         password: String,
         timeout: TimeInterval = 5
     ) async -> [TR064Host]? {
-        // Try HTTPS first
-        if let hosts = await fetchHostsInternal(
+        await fetchHostsInternal(
             routerIP: routerIP,
             username: username,
             password: password,
             timeout: timeout,
-            useHTTPS: true
-        ) {
-            return hosts
-        }
-        // Fallback to HTTP
-        return await fetchHostsInternal(
+            useHTTPS: false,
+            allowEnumerationFallback: true
+        )
+    }
+
+    public static func fetchHostsFast(
+        routerIP: String,
+        username: String,
+        password: String,
+        timeout: TimeInterval = 4
+    ) async -> [TR064Host]? {
+        await fetchHostsInternal(
             routerIP: routerIP,
             username: username,
             password: password,
             timeout: timeout,
-            useHTTPS: false
+            useHTTPS: false,
+            allowEnumerationFallback: false
         )
     }
 
@@ -49,41 +57,36 @@ public enum TR064HostService {
         username: String,
         password: String,
         timeout: TimeInterval,
-        useHTTPS: Bool
+        useHTTPS: Bool,
+        allowEnumerationFallback: Bool
     ) async -> [TR064Host]? {
+        print("[TR064] fetchHostsInternal: start timeout=\(timeout) useHTTPS=\(useHTTPS) allowFallback=\(allowEnumerationFallback)")
         let scheme = useHTTPS ? "https" : "http"
         let port = useHTTPS ? 49443 : 49000
-        let baseURLString = "\(scheme)://\(routerIP):\(port)"
+        let baseURLString = "\(scheme)://\(normalizedRouterHost(from: routerIP)):\(port)"
         guard let baseURL = URL(string: baseURLString) else {
             logger.error("Invalid base URL: \(baseURLString, privacy: .public)")
             return nil
         }
 
-        // Step 1: Try to get host list path by SOAP call GetHostListPath
+        // Step 1: Try to get host list path by SOAP call.
+        // Prefer AVM-specific action first, then generic fallback.
         let controlPath = "/upnp/control/hosts"
         let serviceURN = "urn:dslforum-org:service:Hosts:1"
-        let action = "GetHostListPath"
         let soapBody = ""
-        guard let soapResponse = await sendSOAP(
+        print("[TR064] step1: calling sendHostListPathSOAP")
+        guard let soapResponse = await sendHostListPathSOAP(
             baseURL: baseURL,
             controlPath: controlPath,
             serviceURN: serviceURN,
-            action: action,
             bodyArgs: soapBody,
             username: username,
             password: password,
             timeout: timeout
         ) else {
-            logger.debug("SOAP GetHostListPath failed, fallback to direct hosts XML")
-            if let hosts = await fetchDirectHostsXML(
-                baseURL: baseURL,
-                username: username,
-                password: password,
-                timeout: timeout
-            ) {
-                return hosts
-            }
-            logger.debug("Direct hosts XML failed, fallback to host enumeration")
+            print("[TR064] step1: FAILED - soapResponse nil, entering fallback")
+            logger.debug("SOAP host-list-path actions failed, fallback to host enumeration")
+            guard allowEnumerationFallback else { return nil }
             return await fetchHostsByEnumeration(
                 baseURL: baseURL,
                 username: username,
@@ -91,19 +94,14 @@ public enum TR064HostService {
                 timeout: timeout
             )
         }
+        print("[TR064] step1: SUCCESS - \(soapResponse.count) bytes")
 
         // Step 2: Parse SOAP response XML for NewX_AVM-DE_HostListPath or NewHostListPath
+        print("[TR064] step2: parsing host list path")
         guard let hostListPath = parseHostListPath(fromSOAPResponse: soapResponse) else {
-            logger.debug("No host list path found in SOAP response, fallback to direct hosts XML")
-            if let hosts = await fetchDirectHostsXML(
-                baseURL: baseURL,
-                username: username,
-                password: password,
-                timeout: timeout
-            ) {
-                return hosts
-            }
-            logger.debug("Direct hosts XML failed, fallback to host enumeration")
+            print("[TR064] step2: FAILED - no path found in SOAP response")
+            logger.debug("No host list path found in SOAP response, fallback to host enumeration")
+            guard allowEnumerationFallback else { return nil }
             return await fetchHostsByEnumeration(
                 baseURL: baseURL,
                 username: username,
@@ -111,22 +109,32 @@ public enum TR064HostService {
                 timeout: timeout
             )
         }
+        print("[TR064] step2: SUCCESS - path=\(hostListPath)")
 
-        // Step 3: GET the host list XML at hostListPath
-        guard let hostListURL = URL(string: hostListPath, relativeTo: baseURL) else {
+        // Step 3: GET the host list XML at hostListPath.
+        // Fritz!Box often serves this path on the web interface host (default HTTP port),
+        // not on TR-064 port 49000.
+        print("[TR064] step3: resolving URL from path")
+        guard let hostListURL = resolveHostListURL(hostListPath, routerIP: routerIP) else {
+            print("[TR064] step3: FAILED - could not resolve URL")
             logger.error("Invalid host list URL: \(hostListPath, privacy: .public)")
             return nil
         }
-
-        var request = URLRequest(url: hostListURL)
-        request.timeoutInterval = timeout
-        addBasicAuthHeader(request: &request, username: username, password: password)
+        print("[TR064] step3: fetching \(hostListURL.absoluteString)")
 
         do {
-            let (data, _) = try await urlSession(for: baseURL.scheme ?? "http", timeout: timeout).data(for: request)
-            if let hosts = parseHostsXML(data: data) {
+            let data = try await fetchXMLData(
+                from: hostListURL,
+                username: username,
+                password: password,
+                timeout: timeout
+            )
+            let hosts = parseHostsXML(data: data)
+            print("[TR064] step3: SUCCESS - \(data.count) bytes, \(hosts?.count ?? 0) hosts parsed")
+            if let hosts {
                 return hosts
             }
+            guard allowEnumerationFallback else { return nil }
             logger.debug("Failed to parse host list XML at \(hostListURL.absoluteString, privacy: .public), fallback to host enumeration")
             return await fetchHostsByEnumeration(
                 baseURL: baseURL,
@@ -135,7 +143,9 @@ public enum TR064HostService {
                 timeout: timeout
             )
         } catch {
+            print("[TR064] step3: FAILED - \(error)")
             logger.error("Failed to GET host list XML at \(hostListURL.absoluteString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            guard allowEnumerationFallback else { return nil }
             return await fetchHostsByEnumeration(
                 baseURL: baseURL,
                 username: username,
@@ -151,41 +161,26 @@ public enum TR064HostService {
         password: String,
         timeout: TimeInterval
     ) async -> [TR064Host]? {
-        // Common fallback path is /hosts/hosts (no session id)
-        guard let hostsURL = URL(string: "/hosts/hosts", relativeTo: baseURL) else {
+        // Common fallback path is /hosts/hosts (no session id) on the web interface host.
+        guard let routerHost = baseURL.host,
+              let hostsURL = URL(string: "http://\(routerHost)/hosts/hosts")
+        else {
             logger.error("Invalid fallback hosts URL")
             return nil
         }
-        var request = URLRequest(url: hostsURL)
-        request.timeoutInterval = timeout
-        addBasicAuthHeader(request: &request, username: username, password: password)
-
+        print("[TR064] fetchDirectHostsXML: trying \(hostsURL.absoluteString)")
         do {
-            let (data, _) = try await urlSession(for: baseURL.scheme ?? "http", timeout: timeout).data(for: request)
+            let data = try await fetchXMLData(
+                from: hostsURL,
+                username: username,
+                password: password,
+                timeout: timeout
+            )
             return parseHostsXML(data: data)
         } catch {
             logger.error("Failed to GET fallback hosts XML at \(hostsURL.absoluteString, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return nil
         }
-    }
-
-    private static func addBasicAuthHeader(request: inout URLRequest, username: String, password: String) {
-        let authString = "\(username):\(password)"
-        guard let authData = authString.data(using: .utf8) else { return }
-        let authValue = "Basic " + authData.base64EncodedString()
-        request.setValue(authValue, forHTTPHeaderField: "Authorization")
-    }
-
-    private static func urlSession(for scheme: String, timeout: TimeInterval) -> URLSession {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = timeout
-        let session: URLSession
-        if scheme == "https" {
-            session = URLSession(configuration: config, delegate: SSLTrustDelegate(), delegateQueue: nil)
-        } else {
-            session = URLSession(configuration: config)
-        }
-        return session
     }
 
     private static func sendSOAP(
@@ -198,39 +193,19 @@ public enum TR064HostService {
         password: String,
         timeout: TimeInterval
     ) async -> Data? {
-        let soapEnvelope =
-        """
-        <?xml version="1.0" encoding="utf-8"?>
-        <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-          <s:Body>
-            <u:\(action) xmlns:u="\(serviceURN)">
-              \(bodyArgs)
-            </u:\(action)>
-          </s:Body>
-        </s:Envelope>
-        """
-
-        guard let url = URL(string: controlPath, relativeTo: baseURL) else {
-            logger.error("Invalid SOAP URL: \(controlPath, privacy: .public)")
-            return nil
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.httpBody = soapEnvelope.data(using: .utf8)
-        request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
-        request.setValue("\(serviceURN)#\(action)", forHTTPHeaderField: "SOAPAction")
-        request.timeoutInterval = timeout
-        addBasicAuthHeader(request: &request, username: username, password: password)
-
         do {
-            let (data, response) = try await urlSession(for: baseURL.scheme ?? "http", timeout: timeout).data(for: request)
-            if let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) {
-                return data
-            } else {
-                logger.debug("SOAP action \(action) failed with status \((response as? HTTPURLResponse)?.statusCode ?? -1)")
-                return nil
-            }
+            guard let host = baseURL.host else { return nil }
+            let result = try await FritzDigestAuth.sendSOAP(
+                routerHost: host,
+                controlPath: controlPath,
+                serviceURN: serviceURN,
+                action: action,
+                bodyArgs: bodyArgs,
+                username: username,
+                password: password,
+                timeout: timeout
+            )
+            return result.data
         } catch {
             logger.debug("SOAP action \(action) failed: \(error.localizedDescription, privacy: .public)")
             return nil
@@ -278,6 +253,183 @@ public enum TR064HostService {
         return map
     }
 
+    /// Fetches per-device link speed from Fritz!Box via TR-064 (NewX_AVM-DE_Speed).
+    /// Returned dictionary is keyed by normalized MAC address and contains Mbit/s values.
+    public static func speedMap(
+        routerIP: String,
+        username: String,
+        password: String,
+        macAddresses: [String]
+    ) async -> [String: Double] {
+        let uniqueKeys = Set(macAddresses.map(normalizeMACToKey))
+        guard !uniqueKeys.isEmpty else { return [:] }
+
+        // Fast path for regular monitoring: only use host-list fetch and parsed speed tags.
+        // Keep deep/fallback probing for explicit debug flow.
+        guard let hosts = await fetchHosts(
+            routerIP: routerIP,
+            username: username,
+            password: password,
+            timeout: 5
+        ) else {
+            return [:]
+        }
+        var result: [String: Double] = [:]
+        for host in hosts {
+            let key = normalizeMACToKey(host.mac)
+            guard uniqueKeys.contains(key), let speed = host.speedMbps else { continue }
+            result[key] = speed
+        }
+        return result
+    }
+
+    /// Same as `speedMap`, but also returns per-MAC diagnostics for troubleshooting.
+    public static func speedMapWithDiagnostics(
+        routerIP: String,
+        username: String,
+        password: String,
+        macAddresses: [String]
+    ) async -> (speeds: [String: Double], diagnostics: [String: String]) {
+        let uniqueKeys = Set(macAddresses.map(normalizeMACToKey))
+        guard !uniqueKeys.isEmpty else { return ([:], [:]) }
+
+        var hostListBaseDiagnostics: [String: String] = [:]
+        if let hosts = await fetchHosts(routerIP: routerIP, username: username, password: password, timeout: 8) {
+            var hostListSpeeds: [String: Double] = [:]
+            for host in hosts {
+                let key = normalizeMACToKey(host.mac)
+                guard uniqueKeys.contains(key), let speed = host.speedMbps else { continue }
+                hostListSpeeds[key] = speed
+            }
+            if !hostListSpeeds.isEmpty {
+                var diagnostics: [String: String] = [:]
+                for key in uniqueKeys {
+                    diagnostics[key] = hostListSpeeds[key] == nil
+                        ? "HostList XML: no speed tag for this MAC"
+                        : "HostList XML: speed ok"
+                }
+                return (hostListSpeeds, diagnostics)
+            }
+            for key in uniqueKeys {
+                hostListBaseDiagnostics[key] = "HostList XML: no speed tag for this MAC"
+            }
+        }
+
+        do {
+            // Use a dedicated TR-064 client instance per speed query to avoid
+            // races with other concurrent calls mutating shared auth/session state.
+            let fritzService = FritzBoxTR064Service()
+            let allSpeeds = try await fritzService.fetchHostSpeeds(
+                routerIP: routerIP,
+                username: username,
+                password: password
+            )
+            var filtered: [String: Double] = [:]
+            for key in uniqueKeys {
+                if let speed = allSpeeds[key] {
+                    filtered[key] = speed
+                }
+            }
+            if !filtered.isEmpty {
+                var diagnostics: [String: String] = [:]
+                for key in uniqueKeys {
+                    diagnostics[key] = filtered[key] == nil
+                        ? "FritzService GetGenericHostEntry: no speed tag"
+                        : "FritzService GetGenericHostEntry: speed ok"
+                }
+                return (filtered, diagnostics)
+            }
+        } catch {
+            var diagnostics: [String: String] = [:]
+            for key in uniqueKeys {
+                diagnostics[key] = "FritzService speed query failed: \(error.localizedDescription)"
+            }
+            // Continue with HTTP-only SOAP fallback strategies below and merge diagnostics.
+            let httpResult = await fetchSpeedMapInternalWithDiagnostics(
+                routerIP: routerIP,
+                username: username,
+                password: password,
+                useHTTPS: false,
+                normalizedKeys: uniqueKeys
+            )
+            if !httpResult.speeds.isEmpty {
+                var merged = hostListBaseDiagnostics
+                for (key, info) in diagnostics {
+                    merged[key] = "\(merged[key] ?? "") | \(info)"
+                }
+                for (key, info) in httpResult.diagnostics {
+                    merged[key] = "\(merged[key] ?? "") | HTTP: \(info)"
+                }
+                return (httpResult.speeds, merged)
+            }
+
+            let fallback = await fetchSpeedMapByEnumerationWithError(
+                routerIP: routerIP,
+                username: username,
+                password: password,
+                useHTTPS: false,
+                normalizedKeys: uniqueKeys
+            )
+            if !fallback.speeds.isEmpty {
+                var merged = hostListBaseDiagnostics
+                for (key, info) in diagnostics {
+                    merged[key] = "\(merged[key] ?? "") | \(info)"
+                }
+                for (key, info) in fallback.diagnostics {
+                    merged[key] = "\(merged[key] ?? "") | enum: \(info)"
+                }
+                return (fallback.speeds, merged)
+            }
+
+            var merged = hostListBaseDiagnostics
+            for (key, info) in diagnostics {
+                merged[key] = "\(merged[key] ?? "") | \(info)"
+            }
+            for key in uniqueKeys {
+                let base = merged[key] ?? ""
+                let httpInfo = httpResult.diagnostics[key] ?? "HTTP specific: no data"
+                let enumInfo = fallback.error ?? "enum: no data"
+                merged[key] = "\(base) | HTTP: \(httpInfo) | \(enumInfo)"
+            }
+            return ([:], merged)
+        }
+
+        let httpResult = await fetchSpeedMapInternalWithDiagnostics(
+            routerIP: routerIP,
+            username: username,
+            password: password,
+            useHTTPS: false,
+            normalizedKeys: uniqueKeys
+        )
+        if !httpResult.speeds.isEmpty {
+            return httpResult
+        }
+
+        let fallback = await fetchSpeedMapByEnumerationWithError(
+            routerIP: routerIP,
+            username: username,
+            password: password,
+            useHTTPS: false,
+            normalizedKeys: uniqueKeys
+        )
+        if !fallback.speeds.isEmpty {
+            var merged = httpResult.diagnostics
+            for (key, info) in fallback.diagnostics {
+                merged[key] = "\(httpResult.diagnostics[key] ?? "HTTP specific: no data") | enum: \(info)"
+            }
+            return (fallback.speeds, merged)
+        }
+
+        var mergedDiagnostics = httpResult.diagnostics
+        if let error = fallback.error {
+            for key in uniqueKeys {
+                let previous = mergedDiagnostics[key] ?? "http: no speed"
+                mergedDiagnostics[key] = "\(previous) | enum error: \(error)"
+            }
+        }
+        return ([:], mergedDiagnostics)
+    }
+
     /// Same as `onlineMap`, but returns a readable error string when host retrieval fails.
     public static func onlineMapWithError(
         routerIP: String,
@@ -285,7 +437,8 @@ public enum TR064HostService {
         password: String
     ) async -> (map: [String: (active: Bool, ip: String?)], error: String?) {
         do {
-            let devices = try await FritzBoxTR064Service.shared.fetchConnectedDevices(
+            let service = FritzBoxTR064Service()
+            let devices = try await service.fetchConnectedDevices(
                 routerIP: routerIP,
                 username: username,
                 password: password
@@ -298,17 +451,6 @@ public enum TR064HostService {
         } catch {
             let pickerError = "PickerFlow: \(error.localizedDescription)"
 
-            let httpsResult = await fetchHostsInternalWithError(
-                routerIP: routerIP,
-                username: username,
-                password: password,
-                timeout: 5,
-                useHTTPS: true
-            )
-            if let hosts = httpsResult.hosts {
-                return (buildMap(from: hosts), nil)
-            }
-
             let httpResult = await fetchHostsInternalWithError(
                 routerIP: routerIP,
                 username: username,
@@ -320,9 +462,8 @@ public enum TR064HostService {
                 return (buildMap(from: hosts), nil)
             }
 
-            let httpsError = httpsResult.error ?? "unknown HTTPS error"
             let httpError = httpResult.error ?? "unknown HTTP error"
-            return ([:], "\(pickerError) | HTTPS: \(httpsError) | HTTP: \(httpError)")
+            return ([:], "\(pickerError) | HTTP: \(httpError)")
         }
     }
 
@@ -332,7 +473,8 @@ public enum TR064HostService {
         password: String
     ) async -> [String: (active: Bool, ip: String?)]? {
         do {
-            let devices = try await FritzBoxTR064Service.shared.fetchConnectedDevices(
+            let service = FritzBoxTR064Service()
+            let devices = try await service.fetchConnectedDevices(
                 routerIP: routerIP,
                 username: username,
                 password: password
@@ -356,20 +498,18 @@ public enum TR064HostService {
     ) async -> (hosts: [TR064Host]?, error: String?) {
         let scheme = useHTTPS ? "https" : "http"
         let port = useHTTPS ? 49443 : 49000
-        let baseURLString = "\(scheme)://\(routerIP):\(port)"
+        let baseURLString = "\(scheme)://\(normalizedRouterHost(from: routerIP)):\(port)"
         guard let baseURL = URL(string: baseURLString) else {
             return (nil, "Invalid base URL: \(baseURLString)")
         }
 
         let controlPath = "/upnp/control/hosts"
         let serviceURN = "urn:dslforum-org:service:Hosts:1"
-        let action = "GetHostListPath"
         let soapBody = ""
-        let soapResult = await sendSOAPWithError(
+        let soapResult = await sendHostListPathSOAPWithError(
             baseURL: baseURL,
             controlPath: controlPath,
             serviceURN: serviceURN,
-            action: action,
             bodyArgs: soapBody,
             username: username,
             password: password,
@@ -377,19 +517,17 @@ public enum TR064HostService {
         )
         if let soapResponse = soapResult.data {
             if let hostListPath = parseHostListPath(fromSOAPResponse: soapResponse) {
-                guard let hostListURL = URL(string: hostListPath, relativeTo: baseURL) else {
+                guard let hostListURL = resolveHostListURL(hostListPath, routerIP: routerIP) else {
                     return (nil, "Invalid host list URL: \(hostListPath)")
                 }
 
-                var request = URLRequest(url: hostListURL)
-                request.timeoutInterval = timeout
-                addBasicAuthHeader(request: &request, username: username, password: password)
-
                 do {
-                    let (data, response) = try await urlSession(for: baseURL.scheme ?? "http", timeout: timeout).data(for: request)
-                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                        return (nil, "GET host list failed with HTTP \(http.statusCode)")
-                    }
+                    let data = try await fetchXMLData(
+                        from: hostListURL,
+                        username: username,
+                        password: password,
+                        timeout: timeout
+                    )
                     guard let hosts = parseHostsXML(data: data) else {
                         return (nil, "Failed to parse host list XML")
                     }
@@ -398,15 +536,6 @@ public enum TR064HostService {
                     return (nil, "GET host list failed: \(error.localizedDescription)")
                 }
             } else {
-                let fallback = await fetchDirectHostsXMLWithError(
-                    baseURL: baseURL,
-                    username: username,
-                    password: password,
-                    timeout: timeout
-                )
-                if let hosts = fallback.hosts {
-                    return (hosts, nil)
-                }
                 let enumeration = await fetchHostsByEnumerationWithError(
                     baseURL: baseURL,
                     username: username,
@@ -416,21 +545,10 @@ public enum TR064HostService {
                 if let hosts = enumeration.hosts {
                     return (hosts, nil)
                 }
-                let error = [fallback.error, enumeration.error]
-                    .compactMap { $0 }
-                    .joined(separator: " | fallback: ")
-                return (nil, error.isEmpty ? "Failed to resolve host list path" : error)
+                let error = enumeration.error ?? "Failed to resolve host list path"
+                return (nil, error)
             }
         } else {
-            let fallback = await fetchDirectHostsXMLWithError(
-                baseURL: baseURL,
-                username: username,
-                password: password,
-                timeout: timeout
-            )
-            if let hosts = fallback.hosts {
-                return (hosts, nil)
-            }
             let enumeration = await fetchHostsByEnumerationWithError(
                 baseURL: baseURL,
                 username: username,
@@ -440,11 +558,180 @@ public enum TR064HostService {
             if let hosts = enumeration.hosts {
                 return (hosts, nil)
             }
-            let combinedError = [soapResult.error, fallback.error, enumeration.error]
+            let combinedError = [soapResult.error, enumeration.error]
                 .compactMap { $0 }
                 .joined(separator: " | fallback: ")
             return (nil, combinedError.isEmpty ? "Unknown SOAP/fallback failure" : combinedError)
         }
+    }
+
+    private static func fetchSpeedMapInternalWithDiagnostics(
+        routerIP: String,
+        username: String,
+        password: String,
+        useHTTPS: Bool,
+        normalizedKeys: Set<String>
+    ) async -> (speeds: [String: Double], diagnostics: [String: String]) {
+        let scheme = useHTTPS ? "https" : "http"
+        let port = useHTTPS ? 49443 : 49000
+        let baseURLString = "\(scheme)://\(normalizedRouterHost(from: routerIP)):\(port)"
+        guard let baseURL = URL(string: baseURLString) else { return ([:], [:]) }
+
+        let serviceURN = "urn:dslforum-org:service:Hosts:1"
+        var speeds: [String: Double] = [:]
+        var diagnostics: [String: String] = [:]
+        var ipByKey: [String: String] = [:]
+
+        let hostsResult = await fetchHostsInternalWithError(
+            routerIP: routerIP,
+            username: username,
+            password: password,
+            timeout: 5,
+            useHTTPS: useHTTPS
+        )
+        if let hosts = hostsResult.hosts {
+            for host in hosts {
+                let key = normalizeMACToKey(host.mac)
+                if let ip = host.ip, !ip.isEmpty {
+                    ipByKey[key] = ip
+                }
+            }
+        }
+
+        for key in normalizedKeys {
+            let specificBodyArgs: String
+            if let ip = ipByKey[key] {
+                specificBodyArgs = "<NewIPAddress>\(ip)</NewIPAddress>"
+            } else {
+                // Fallback for firmwares that support MAC directly.
+                specificBodyArgs = "<NewMACAddress>\(normalizedKeyToColonMAC(key))</NewMACAddress>"
+            }
+            let response = await sendSOAPWithError(
+                baseURL: baseURL,
+                controlPath: "/upnp/control/hosts",
+                serviceURN: serviceURN,
+                action: "GetSpecificHostEntry",
+                bodyArgs: specificBodyArgs,
+                username: username,
+                password: password,
+                timeout: 5
+            )
+            guard let payload = response.data else {
+                diagnostics[key] = "GetSpecificHostEntry failed: \(response.error ?? "unknown")"
+                continue
+            }
+
+            let xml = String(data: payload, encoding: .utf8) ?? ""
+            if let speed = parseSpeedMbps(from: xml) {
+                speeds[key] = speed
+                let queryKind = ipByKey[key] == nil ? "mac-fallback" : "ip"
+                diagnostics[key] = "GetSpecificHostEntry ok (\(scheme), \(queryKind))"
+            } else {
+                let avmByMac = await sendSOAPWithError(
+                    baseURL: baseURL,
+                    controlPath: "/upnp/control/hosts",
+                    serviceURN: serviceURN,
+                    action: "X_AVM-DE_GetSpecificHostEntryByMACAddress",
+                    bodyArgs: "<NewMACAddress>\(normalizedKeyToColonMAC(key))</NewMACAddress>",
+                    username: username,
+                    password: password,
+                    timeout: 5
+                )
+                if let avmData = avmByMac.data {
+                    let avmXML = String(data: avmData, encoding: .utf8) ?? ""
+                    if let avmSpeed = parseSpeedMbps(from: avmXML) {
+                        speeds[key] = avmSpeed
+                        diagnostics[key] = "X_AVM-DE_GetSpecificHostEntryByMACAddress ok (\(scheme))"
+                        continue
+                    }
+                }
+
+                let speedTag = extractXMLTag(xml, tag: "NewX_AVM-DE_Speed")
+                    ?? extractXMLTag(xml, tag: "NewX_AVM_DE_Speed")
+                    ?? "missing"
+                let hostActive = extractXMLTag(xml, tag: "NewActive") ?? "missing"
+                let candidates = speedCandidateTags(in: xml).joined(separator: ",")
+                let avmDiag = avmByMac.error ?? "no speed in AVM action"
+                diagnostics[key] = "GetSpecificHostEntry no speed (\(scheme)); speedTag=\(speedTag), active=\(hostActive), candidates=[\(candidates)], avmAction=\(avmDiag)"
+            }
+        }
+
+        return (speeds, diagnostics)
+    }
+
+    private static func fetchSpeedMapByEnumerationWithError(
+        routerIP: String,
+        username: String,
+        password: String,
+        useHTTPS: Bool,
+        normalizedKeys: Set<String>
+    ) async -> (speeds: [String: Double], diagnostics: [String: String], error: String?) {
+        let scheme = useHTTPS ? "https" : "http"
+        let port = useHTTPS ? 49443 : 49000
+        let baseURLString = "\(scheme)://\(normalizedRouterHost(from: routerIP)):\(port)"
+        guard let baseURL = URL(string: baseURLString) else {
+            return ([:], [:], "Invalid base URL: \(baseURLString)")
+        }
+
+        let serviceURN = "urn:dslforum-org:service:Hosts:1"
+        let countResponse = await sendSOAPWithError(
+            baseURL: baseURL,
+            controlPath: "/upnp/control/hosts",
+            serviceURN: serviceURN,
+            action: "GetHostNumberOfEntries",
+            bodyArgs: "",
+            username: username,
+            password: password,
+            timeout: 5
+        )
+        guard let countData = countResponse.data else {
+            return ([:], [:], "GetHostNumberOfEntries failed: \(countResponse.error ?? "unknown")")
+        }
+        let countXML = String(data: countData, encoding: .utf8) ?? ""
+        guard let countStr = extractXMLTag(countXML, tag: "NewHostNumberOfEntries"),
+              let count = Int(countStr),
+              count > 0 else {
+            return ([:], [:], "No host entries")
+        }
+
+        var speeds: [String: Double] = [:]
+        var diagnostics: [String: String] = [:]
+        var seenKeys: Set<String> = []
+
+        for index in 0..<count {
+            let entryResponse = await sendSOAPWithError(
+                baseURL: baseURL,
+                controlPath: "/upnp/control/hosts",
+                serviceURN: serviceURN,
+                action: "GetGenericHostEntry",
+                bodyArgs: "<NewIndex>\(index)</NewIndex>",
+                username: username,
+                password: password,
+                timeout: 5
+            )
+            guard let entryData = entryResponse.data else { continue }
+            let entryXML = String(data: entryData, encoding: .utf8) ?? ""
+            guard let mac = extractXMLTag(entryXML, tag: "NewMACAddress") else { continue }
+            let key = normalizeMACToKey(mac)
+            guard normalizedKeys.contains(key) else { continue }
+
+            seenKeys.insert(key)
+            if let speed = parseSpeedMbps(from: entryXML) {
+                speeds[key] = speed
+                diagnostics[key] = "GetGenericHostEntry speed=\(speed) (\(scheme))"
+            } else {
+                let raw = extractXMLTag(entryXML, tag: "NewX_AVM-DE_Speed")
+                    ?? extractXMLTag(entryXML, tag: "NewX_AVM_DE_Speed")
+                    ?? "missing"
+                diagnostics[key] = "GetGenericHostEntry no speed (\(scheme)); raw=\(raw)"
+            }
+        }
+
+        for key in normalizedKeys where !seenKeys.contains(key) {
+            diagnostics[key] = "GetGenericHostEntry: MAC not found (\(scheme))"
+        }
+
+        return (speeds, diagnostics, nil)
     }
 
     private static func fetchDirectHostsXMLWithError(
@@ -453,18 +740,18 @@ public enum TR064HostService {
         password: String,
         timeout: TimeInterval
     ) async -> (hosts: [TR064Host]?, error: String?) {
-        guard let hostsURL = URL(string: "/hosts/hosts", relativeTo: baseURL) else {
+        guard let routerHost = baseURL.host,
+              let hostsURL = URL(string: "http://\(routerHost)/hosts/hosts")
+        else {
             return (nil, "Invalid fallback hosts URL")
         }
-        var request = URLRequest(url: hostsURL)
-        request.timeoutInterval = timeout
-        addBasicAuthHeader(request: &request, username: username, password: password)
-
         do {
-            let (data, response) = try await urlSession(for: baseURL.scheme ?? "http", timeout: timeout).data(for: request)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                return (nil, "Fallback GET failed with HTTP \(http.statusCode)")
-            }
+            let data = try await fetchXMLData(
+                from: hostsURL,
+                username: username,
+                password: password,
+                timeout: timeout
+            )
             guard let hosts = parseHostsXML(data: data) else {
                 return (nil, "Failed to parse fallback hosts XML")
             }
@@ -484,40 +771,91 @@ public enum TR064HostService {
         password: String,
         timeout: TimeInterval
     ) async -> (data: Data?, error: String?) {
-        let soapEnvelope =
-        """
-        <?xml version="1.0" encoding="utf-8"?>
-        <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-          <s:Body>
-            <u:\(action) xmlns:u="\(serviceURN)">
-              \(bodyArgs)
-            </u:\(action)>
-          </s:Body>
-        </s:Envelope>
-        """
-
-        guard let url = URL(string: controlPath, relativeTo: baseURL) else {
-            return (nil, "Invalid SOAP URL: \(controlPath)")
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.httpBody = soapEnvelope.data(using: .utf8)
-        request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
-        request.setValue("\(serviceURN)#\(action)", forHTTPHeaderField: "SOAPAction")
-        request.timeoutInterval = timeout
-        addBasicAuthHeader(request: &request, username: username, password: password)
-
         do {
-            let (data, response) = try await urlSession(for: baseURL.scheme ?? "http", timeout: timeout).data(for: request)
-            if let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) {
-                return (data, nil)
+            guard let host = baseURL.host else {
+                return (nil, "Invalid base host")
             }
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            return (nil, "SOAP \(action) failed with HTTP \(status)")
+            let result = try await FritzDigestAuth.sendSOAP(
+                routerHost: host,
+                controlPath: controlPath,
+                serviceURN: serviceURN,
+                action: action,
+                bodyArgs: bodyArgs,
+                username: username,
+                password: password,
+                timeout: timeout
+            )
+            return (result.data, nil)
+        } catch let digestError as FritzDigestAuthError {
+            switch digestError {
+            case let .httpStatus(status, body):
+                return (nil, "SOAP \(action) failed with HTTP \(status): \(body)")
+            default:
+                return (nil, "SOAP \(action) failed: \(digestError)")
+            }
         } catch {
             return (nil, "SOAP \(action) failed: \(error.localizedDescription)")
         }
+    }
+
+    private static func sendHostListPathSOAP(
+        baseURL: URL,
+        controlPath: String,
+        serviceURN: String,
+        bodyArgs: String,
+        username: String,
+        password: String,
+        timeout: TimeInterval
+    ) async -> Data? {
+        let actions = ["X_AVM-DE_GetHostListPath", "GetHostListPath"]
+        for action in actions {
+            print("[TR064] sendHostListPathSOAP: trying action \(action)")
+            if let response = await sendSOAP(
+                baseURL: baseURL,
+                controlPath: controlPath,
+                serviceURN: serviceURN,
+                action: action,
+                bodyArgs: bodyArgs,
+                username: username,
+                password: password,
+                timeout: timeout
+            ) {
+                print("[TR064] sendHostListPathSOAP: action \(action) returned \(response.count) bytes")
+                return response
+            }
+            print("[TR064] sendHostListPathSOAP: action \(action) returned nil")
+        }
+        return nil
+    }
+
+    private static func sendHostListPathSOAPWithError(
+        baseURL: URL,
+        controlPath: String,
+        serviceURN: String,
+        bodyArgs: String,
+        username: String,
+        password: String,
+        timeout: TimeInterval
+    ) async -> (data: Data?, error: String?) {
+        let actions = ["X_AVM-DE_GetHostListPath", "GetHostListPath"]
+        var errors: [String] = []
+        for action in actions {
+            let result = await sendSOAPWithError(
+                baseURL: baseURL,
+                controlPath: controlPath,
+                serviceURN: serviceURN,
+                action: action,
+                bodyArgs: bodyArgs,
+                username: username,
+                password: password,
+                timeout: timeout
+            )
+            if let data = result.data {
+                return (data, nil)
+            }
+            errors.append(result.error ?? "\(action) failed")
+        }
+        return (nil, errors.joined(separator: " | "))
     }
 
     private static func fetchHostsByEnumeration(
@@ -541,6 +879,7 @@ public enum TR064HostService {
         password: String,
         timeout: TimeInterval
     ) async -> (hosts: [TR064Host]?, error: String?) {
+        print("[TR064] fetchHostsByEnumeration: start")
         let serviceURN = "urn:dslforum-org:service:Hosts:1"
 
         let numberOfEntriesResult = await sendSOAPWithError(
@@ -564,6 +903,7 @@ public enum TR064HostService {
         else {
             return (nil, "Failed to parse NewHostNumberOfEntries")
         }
+        print("[TR064] fetchHostsByEnumeration: \(count) hosts to enumerate")
 
         if count <= 0 {
             return ([], nil)
@@ -602,7 +942,8 @@ public enum TR064HostService {
                     mac: mac,
                     ip: ip?.isEmpty == true ? nil : ip,
                     active: isActive,
-                    name: hostName?.isEmpty == true ? nil : hostName
+                    name: hostName?.isEmpty == true ? nil : hostName,
+                    speedMbps: parseSpeedMbps(from: entryXML)
                 )
             )
         }
@@ -636,6 +977,55 @@ public enum TR064HostService {
         return map
     }
 
+    private static func normalizedRouterHost(from _: String) -> String {
+        fixedRouterHost
+    }
+
+    private static func resolveHostListURL(_ hostListPath: String, routerIP: String) -> URL? {
+        let correctedPath = hostListPath.replacingOccurrences(of: "devicehostlist.lua", with: "hostlist.lua")
+        if let absolute = URL(string: correctedPath), absolute.scheme != nil {
+            return absolute
+        }
+        let host = normalizedRouterHost(from: routerIP)
+        let path = correctedPath.hasPrefix("/") ? correctedPath : "/" + correctedPath
+        return URL(string: "http://\(host)\(path)")
+    }
+
+    private static func fetchXMLData(
+        from url: URL,
+        username: String,
+        password: String,
+        timeout: TimeInterval
+    ) async throws -> Data {
+        print("[TR064] fetchXMLData: url=\(url.absoluteString) hasSID=\(containsSID(url))")
+        if containsSID(url) {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+                return data
+            }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw FritzDigestAuthError.httpStatus(status, body)
+        }
+
+        let (data, _) = try await FritzDigestAuth.get(
+            url: url,
+            username: username,
+            password: password,
+            timeout: timeout
+        )
+        return data
+    }
+
+    private static func containsSID(_ url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let queryItems = components.queryItems
+        else {
+            return false
+        }
+        return queryItems.contains { $0.name.caseInsensitiveCompare("sid") == .orderedSame }
+    }
+
     private static func normalizeMACToKey(_ mac: String) -> String {
         // Normalize mac:
         // - uppercase, remove all non hex digits
@@ -659,6 +1049,183 @@ public enum TR064HostService {
         } else {
             return hexOnly.lowercased()
         }
+    }
+
+    private static func normalizedKeyToColonMAC(_ key: String) -> String {
+        let hexOnly = key.uppercased().filter { "0123456789ABCDEF".contains($0) }
+        guard hexOnly.count == 12 else { return key }
+        var parts: [String] = []
+        parts.reserveCapacity(6)
+        for i in stride(from: 0, to: 12, by: 2) {
+            let start = hexOnly.index(hexOnly.startIndex, offsetBy: i)
+            let end = hexOnly.index(start, offsetBy: 2)
+            parts.append(String(hexOnly[start..<end]))
+        }
+        return parts.joined(separator: ":")
+    }
+
+    private static func parseSpeedMbps(from xml: String) -> Double? {
+        let raw = extractXMLTag(xml, tag: "NewX_AVM-DE_Speed")
+            ?? extractXMLTag(xml, tag: "NewX_AVM_DE_Speed")
+            ?? extractXMLTag(xml, tag: "X_AVM-DE_Speed")
+            ?? extractXMLTag(xml, tag: "X_AVM_DE_Speed")
+            ?? extractXMLTag(xml, tag: "NewSpeed")
+        guard let raw else { return nil }
+        if let direct = Double(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return direct
+        }
+        guard let regex = try? NSRegularExpression(pattern: "([0-9]+(?:\\.[0-9]+)?)"),
+              let match = regex.firstMatch(in: raw, range: NSRange(raw.startIndex..<raw.endIndex, in: raw)),
+              let range = Range(match.range(at: 1), in: raw)
+        else {
+            return nil
+        }
+        return Double(String(raw[range]))
+    }
+
+    private static func speedCandidateTags(in xml: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: "<([A-Za-z0-9:_\\-]*Speed[A-Za-z0-9:_\\-]*)>") else {
+            return []
+        }
+        let nsRange = NSRange(xml.startIndex..<xml.endIndex, in: xml)
+        let matches = regex.matches(in: xml, range: nsRange)
+        var tags: [String] = []
+        for match in matches {
+            guard let range = Range(match.range(at: 1), in: xml) else { continue }
+            let tag = String(xml[range])
+            if !tags.contains(tag) {
+                tags.append(tag)
+            }
+            if tags.count >= 6 { break }
+        }
+        return tags
+    }
+    public static func debugSpeedProbeLines(
+        routerIP: String,
+        username: String,
+        password: String,
+        macAddress: String
+    ) async -> [String] {
+        let key = normalizeMACToKey(macAddress)
+        var lines: [String] = []
+        let schemes: [(name: String, useHTTPS: Bool)] = [("http", false)]
+        let routerHost = normalizedRouterHost(from: routerIP)
+
+        for scheme in schemes {
+            let port = scheme.useHTTPS ? 49443 : 49000
+            guard let baseURL = URL(string: "\(scheme.name)://\(routerHost):\(port)") else {
+                lines.append("[\(scheme.name)] invalid base URL")
+                continue
+            }
+
+            let hosts = await fetchHostsInternalWithError(
+                routerIP: routerIP,
+                username: username,
+                password: password,
+                timeout: 5,
+                useHTTPS: scheme.useHTTPS
+            )
+            let ipForKey = hosts.hosts?.first(where: { normalizeMACToKey($0.mac) == key })?.ip
+            lines.append("[\(scheme.name)] host list: \(hosts.hosts?.count ?? 0) entries, ipForMac=\(ipForKey ?? "n/a"), err=\(hosts.error ?? "none")")
+
+            let serviceURN = "urn:dslforum-org:service:Hosts:1"
+            let macBody = "<NewMACAddress>\(normalizedKeyToColonMAC(key))</NewMACAddress>"
+
+            if let ipForKey, !ipForKey.isEmpty {
+                if let handshake = try? await FritzDigestAuth.debugSOAPHandshake(
+                    routerHost: normalizedRouterHost(from: routerIP),
+                    controlPath: "/upnp/control/hosts",
+                    serviceURN: serviceURN,
+                    action: "GetSpecificHostEntry",
+                    timeout: 4
+                ) {
+                    lines.append("[\(scheme.name)] digest GetSpecificHostEntry -> \(handshake.summary)")
+                }
+                let byIP = await sendSOAPWithError(
+                    baseURL: baseURL,
+                    controlPath: "/upnp/control/hosts",
+                    serviceURN: serviceURN,
+                    action: "GetSpecificHostEntry",
+                    bodyArgs: "<NewIPAddress>\(ipForKey)</NewIPAddress>",
+                    username: username,
+                    password: password,
+                    timeout: 5
+                )
+                lines.append(probeSummaryLine(scheme: scheme.name, action: "GetSpecificHostEntry", mode: "ip", data: byIP.data, error: byIP.error))
+            }
+
+            if let handshake = try? await FritzDigestAuth.debugSOAPHandshake(
+                routerHost: normalizedRouterHost(from: routerIP),
+                controlPath: "/upnp/control/hosts",
+                serviceURN: serviceURN,
+                action: "GetSpecificHostEntry",
+                timeout: 4
+            ) {
+                lines.append("[\(scheme.name)] digest GetSpecificHostEntry(mac) -> \(handshake.summary)")
+            }
+            let byMac = await sendSOAPWithError(
+                baseURL: baseURL,
+                controlPath: "/upnp/control/hosts",
+                serviceURN: serviceURN,
+                action: "GetSpecificHostEntry",
+                bodyArgs: macBody,
+                username: username,
+                password: password,
+                timeout: 5
+            )
+            lines.append(probeSummaryLine(scheme: scheme.name, action: "GetSpecificHostEntry", mode: "mac", data: byMac.data, error: byMac.error))
+
+            if let handshake = try? await FritzDigestAuth.debugSOAPHandshake(
+                routerHost: normalizedRouterHost(from: routerIP),
+                controlPath: "/upnp/control/hosts",
+                serviceURN: serviceURN,
+                action: "X_AVM-DE_GetSpecificHostEntryByMACAddress",
+                timeout: 4
+            ) {
+                lines.append("[\(scheme.name)] digest X_AVM-DE_GetSpecificHostEntryByMACAddress -> \(handshake.summary)")
+            }
+            let avm = await sendSOAPWithError(
+                baseURL: baseURL,
+                controlPath: "/upnp/control/hosts",
+                serviceURN: serviceURN,
+                action: "X_AVM-DE_GetSpecificHostEntryByMACAddress",
+                bodyArgs: macBody,
+                username: username,
+                password: password,
+                timeout: 5
+            )
+            lines.append(probeSummaryLine(scheme: scheme.name, action: "X_AVM-DE_GetSpecificHostEntryByMACAddress", mode: "mac", data: avm.data, error: avm.error))
+        }
+        return lines
+    }
+
+    private static func probeSummaryLine(
+        scheme: String,
+        action: String,
+        mode: String,
+        data: Data?,
+        error: String?
+    ) -> String {
+        if let error {
+            return "[\(scheme)] \(action) (\(mode)) -> error: \(error)"
+        }
+        guard let data else {
+            return "[\(scheme)] \(action) (\(mode)) -> no data"
+        }
+        let xml = String(data: data, encoding: .utf8) ?? ""
+        let speedTagValue = extractXMLTag(xml, tag: "NewX_AVM-DE_Speed")
+            ?? extractXMLTag(xml, tag: "NewX_AVM_DE_Speed")
+            ?? extractXMLTag(xml, tag: "X_AVM-DE_Speed")
+            ?? extractXMLTag(xml, tag: "X_AVM_DE_Speed")
+            ?? extractXMLTag(xml, tag: "NewSpeed")
+            ?? "missing"
+        let activeValue = extractXMLTag(xml, tag: "NewActive") ?? "missing"
+        let candidates = speedCandidateTags(in: xml).joined(separator: ",")
+        let snippet = xml
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let shortSnippet = String(snippet.prefix(260))
+        return "[\(scheme)] \(action) (\(mode)) -> speedTag=\(speedTagValue), active=\(activeValue), candidates=[\(candidates)], xml=\"\(shortSnippet)\""
     }
 }
 
@@ -704,6 +1271,7 @@ private class HostsXMLParser: NSObject, XMLParserDelegate {
     private var currentIP: String?
     private var currentActive: Bool = false
     private var currentName: String?
+    private var currentSpeed: Double?
     private var insideItem = false
     private var foundCharacters = ""
 
@@ -715,6 +1283,7 @@ private class HostsXMLParser: NSObject, XMLParserDelegate {
             currentIP = nil
             currentActive = false
             currentName = nil
+            currentSpeed = nil
         }
         currentElement = elementName
         foundCharacters = ""
@@ -740,6 +1309,8 @@ private class HostsXMLParser: NSObject, XMLParserDelegate {
                     currentActive = (trimmed == "1" || trimmed.lowercased() == "true")
                 case "HostName":
                     currentName = trimmed.isEmpty ? nil : trimmed
+                case "X_AVM-DE_Speed", "X_AVM_DE_Speed", "NewX_AVM-DE_Speed", "NewX_AVM_DE_Speed", "Speed", "NewSpeed":
+                    currentSpeed = parseNumericSpeed(trimmed)
                 default:
                     break
                 }
@@ -747,7 +1318,13 @@ private class HostsXMLParser: NSObject, XMLParserDelegate {
             if elementName == "Item" {
                 insideItem = false
                 if let mac = currentMAC, !mac.isEmpty {
-                    let host = TR064Host(mac: mac, ip: currentIP, active: currentActive, name: currentName)
+                    let host = TR064Host(
+                        mac: mac,
+                        ip: currentIP,
+                        active: currentActive,
+                        name: currentName,
+                        speedMbps: currentSpeed
+                    )
                     hosts.append(host)
                 }
             }
@@ -755,27 +1332,17 @@ private class HostsXMLParser: NSObject, XMLParserDelegate {
             foundCharacters = ""
         }
     }
-}
 
-// MARK: - SSLTrustDelegate
-
-/// URLSessionDelegate to allow system trust validation of TLS certificates (including self-signed if trusted)
-private class SSLTrustDelegate: NSObject, URLSessionDelegate {
-    func urlSession(_ session: URLSession,
-                    didReceive challenge: URLAuthenticationChallenge,
-                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        // Use system default trust evaluation
-        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-           let serverTrust = challenge.protectionSpace.serverTrust {
-            var secresult = SecTrustResultType.invalid
-            let status = SecTrustEvaluate(serverTrust, &secresult)
-            if status == errSecSuccess,
-               (secresult == .unspecified || secresult == .proceed) {
-                let credential = URLCredential(trust: serverTrust)
-                completionHandler(.useCredential, credential)
-                return
-            }
+    private func parseNumericSpeed(_ raw: String) -> Double? {
+        if let direct = Double(raw) {
+            return direct
         }
-        completionHandler(.cancelAuthenticationChallenge, nil)
+        guard let regex = try? NSRegularExpression(pattern: "([0-9]+(?:\\.[0-9]+)?)"),
+              let match = regex.firstMatch(in: raw, range: NSRange(raw.startIndex..<raw.endIndex, in: raw)),
+              let range = Range(match.range(at: 1), in: raw)
+        else {
+            return nil
+        }
+        return Double(String(raw[range]))
     }
 }

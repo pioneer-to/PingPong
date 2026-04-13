@@ -15,6 +15,7 @@ struct MainStatusView: View {
     @State private var tr064DebugOutput = ""
     @AppStorage("networkMap.traceTargetInput") private var traceTargetInput = ""
     @State private var isResolvingTraceTarget = false
+    @State private var isEditingTraceTarget = false
     @FocusState private var isTraceTargetFieldFocused: Bool
 
     var body: some View {
@@ -87,7 +88,7 @@ struct MainStatusView: View {
                 LocalDeviceRowView(
                     device: device,
                     result: monitor.localResults[device.id],
-                    sparklineData: monitor.localLatencyHistory[device.id] ?? []
+                    speedMbps: monitor.localSpeeds[device.id]
                 )
             }
 
@@ -130,6 +131,13 @@ struct MainStatusView: View {
             // Footer
             footerRow
         }
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                if isEditingTraceTarget {
+                    dismissTraceTargetEditing()
+                }
+            }
+        )
         .overlay {
             if isShowingTR064Debug {
                 ZStack {
@@ -151,9 +159,17 @@ struct MainStatusView: View {
         }
         .onAppear {
             isTraceTargetFieldFocused = false
+            isEditingTraceTarget = false
         }
         .onDisappear {
             isShowingTR064Debug = false
+            isTraceTargetFieldFocused = false
+            isEditingTraceTarget = false
+        }
+        .onChange(of: isTraceTargetFieldFocused) { _, focused in
+            if !focused && isEditingTraceTarget {
+                isEditingTraceTarget = false
+            }
         }
     }
 
@@ -233,12 +249,38 @@ struct MainStatusView: View {
             Text("Traceroute to")
                 .font(.body)
 
-            TextField("", text: $traceTargetInput, prompt: Text("google.com").foregroundStyle(.secondary))
-                .textFieldStyle(.roundedBorder)
-                .focused($isTraceTargetFieldFocused)
-                .onSubmit {
-                    runTraceFromInput()
+            Group {
+                if isEditingTraceTarget {
+                    TextField("", text: $traceTargetInput, prompt: Text("google.com").foregroundStyle(.secondary))
+                        .textFieldStyle(.roundedBorder)
+                        .focused($isTraceTargetFieldFocused)
+                        .onSubmit {
+                            runTraceFromInput()
+                        }
+                } else {
+                    Button {
+                        isEditingTraceTarget = true
+                        DispatchQueue.main.async {
+                            isTraceTargetFieldFocused = true
+                        }
+                    } label: {
+                        HStack {
+                            Text(traceTargetInput.isEmpty ? "google.com" : traceTargetInput)
+                                .foregroundStyle(traceTargetInput.isEmpty ? .secondary : .primary)
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.secondary.opacity(0.35), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
                 }
+            }
 
             Button("Trace") {
                 runTraceFromInput()
@@ -280,9 +322,17 @@ struct MainStatusView: View {
             await MainActor.run {
                 traceTargetInput = sanitized
                 isResolvingTraceTarget = false
+                isEditingTraceTarget = false
+                isTraceTargetFieldFocused = false
                 navigate(.networkMap(resolvedIP))
             }
         }
+    }
+
+    private func dismissTraceTargetEditing() {
+        isTraceTargetFieldFocused = false
+        isEditingTraceTarget = false
+        NSApp.keyWindow?.makeFirstResponder(nil)
     }
 
     private func sanitizeTraceInput(_ input: String) -> String {
@@ -452,6 +502,40 @@ struct MainStatusView: View {
         }
 
         await addLine("")
+        await addLine("Selected Device Speed Query (NewX_AVM-DE_Speed):")
+        if monitor.localDevices.isEmpty {
+            await addLine("- No local devices configured")
+        } else {
+            let speedStarted = Date()
+            let speedResult = await TR064HostService.speedMapWithDiagnostics(
+                routerIP: routerIP,
+                username: account,
+                password: password,
+                macAddresses: monitor.localDevices.map(\.macAddress)
+            )
+            let speedElapsed = Date().timeIntervalSince(speedStarted)
+            await addLine(String(format: "- Speed query duration: %.2fs", speedElapsed))
+            for device in monitor.localDevices {
+                let state = localMapEntry(for: device.macAddress, in: map)
+                let speed = localMapEntry(for: device.macAddress, in: speedResult.speeds)
+                let diag = localMapEntry(for: device.macAddress, in: speedResult.diagnostics) ?? "no diagnostic"
+                let speedText = Formatters.localDeviceSpeed(speed)
+                let activeText = state?.active == true ? "online" : "offline"
+                await addLine("- \(device.displayName) [\(device.macAddress)] -> \(speedText), \(activeText)")
+                await addLine("  diag: \(diag)")
+                let probeLines = await TR064HostService.debugSpeedProbeLines(
+                    routerIP: routerIP,
+                    username: account,
+                    password: password,
+                    macAddress: device.macAddress
+                )
+                for probeLine in probeLines {
+                    await addLine("  raw: \(probeLine)")
+                }
+            }
+        }
+
+        await addLine("")
         await addLine("Result Summary:")
         if let successAttempt {
             await addLine("- Map empty: no")
@@ -502,6 +586,14 @@ struct MainStatusView: View {
                 lines.append("- \(device.displayName) [\(device.macAddress)] -> match: no")
             }
         }
+    }
+
+    private func localMapEntry<T>(for macAddress: String, in map: [String: T]) -> T? {
+        let key1 = macAddress.lowercased()
+        let key2 = key1.replacingOccurrences(of: "-", with: ":")
+        let key3 = key1.replacingOccurrences(of: ":", with: "-")
+        let key4 = key1.replacingOccurrences(of: ":", with: "")
+        return map[key1] ?? map[key2] ?? map[key3] ?? map[key4]
     }
 
     private func guessedRouterIP(from gateway: String) -> String {

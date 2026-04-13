@@ -113,4 +113,16 @@ enum Formatters {
         let gb = mb / 1024.0
         return String(format: "%.1f GB/s", gb)
     }
+
+    // MARK: - Local Device Speed
+
+    /// Format local link speed in Mbit/s or Gbit/s.
+    static func localDeviceSpeed(_ speedMbps: Double?) -> String {
+        guard let speedMbps else { return "---" }
+        if speedMbps >= 1000 {
+            let gbit = speedMbps / 1000
+            return String(format: "%.1f Gbit/s", gbit)
+        }
+        return String(format: "%.0f Mbit/s", speedMbps)
+    }
 }

@@ -28,3 +28,12 @@ extension IncidentCategory {
         }
     }
 }
+
+extension Double {
+    var localSpeedQualityColor: Color {
+        if self < Config.speedQualityLowThreshold { return .red }
+        if self < Config.speedQualityMediumThreshold { return .orange }
+        if self < Config.speedQualityHighThreshold { return .yellow }
+        return .green
+    }
+}

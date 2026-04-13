@@ -10,7 +10,7 @@ import SwiftUI
 struct LocalDeviceRowView: View {
     let device: LocalNetworkDevice
     let result: PingResult?
-    var sparklineData: [Double?] = []
+    let speedMbps: Double?
     
     @State private var isHovered = false
 
@@ -35,18 +35,12 @@ struct LocalDeviceRowView: View {
 
             Spacer()
 
-            if device.usePing {
-                if sparklineData.compactMap({ $0 }).count >= 2 {
-                    SparklineView(values: sparklineData, color: Color(red: 0.65, green: 0.52, blue: 0.0))
-                }
-
-                Text(result?.latencyString ?? "---")
-                    .font(.system(.body, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(result?.latencyColor ?? .secondary)
-                    .contentTransition(.numericText())
-                    .animation(.easeInOut(duration: 0.2), value: result?.latency)
-            }
+            Text(Formatters.localDeviceSpeed(speedMbps))
+                .font(.system(.body, design: .monospaced))
+                .monospacedDigit()
+                .foregroundStyle(speedColor)
+                .contentTransition(.numericText())
+                .animation(.easeInOut(duration: 0.2), value: speedMbps)
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 12)
@@ -63,5 +57,10 @@ struct LocalDeviceRowView: View {
     private var statusColor: Color {
         guard let result else { return .secondary }
         return result.isReachable ? .green : .red
+    }
+
+    private var speedColor: Color {
+        guard let speedMbps else { return .secondary }
+        return speedMbps.localSpeedQualityColor
     }
 }

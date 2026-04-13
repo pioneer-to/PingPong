@@ -86,19 +86,31 @@ struct LocalDevicePickerView: View {
         await fetchDevicesSilentlyUntilDeadline()
     }
     
-    @MainActor
-    private func setLoading(_ loading: Bool) {
-        isLoading = loading
-    }
-    
     private func fetchDevicesSilentlyUntilDeadline() async {
-        await setLoading(true)
-        errorMessage = nil
-        devices = []
+        await MainActor.run {
+            isLoading = true
+            errorMessage = nil
+            devices = []
+        }
 
         while true {
             do {
-                let activeDevices = try await FritzBoxTR064Service.shared.fetchConnectedDevices(routerIP: routerIP)
+                let service = FritzBoxTR064Service()
+                let username = (
+                    UserDefaults.standard.string(forKey: "local.username")
+                    ?? UserDefaults.standard.string(forKey: Config.Keys.fritzUsername)
+                    ?? ""
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                let password = (
+                    UserDefaults.standard.string(forKey: "local.password")
+                    ?? UserDefaults.standard.string(forKey: Config.Keys.fritzPassword)
+                    ?? ""
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                let activeDevices = try await service.fetchConnectedDevices(
+                    routerIP: routerIP,
+                    username: username,
+                    password: password
+                )
                 await MainActor.run {
                     self.devices = activeDevices.sorted(by: { $0.originalName < $1.originalName })
                     self.isLoading = false

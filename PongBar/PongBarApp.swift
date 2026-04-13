@@ -131,7 +131,7 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
         if let color {
             attributes[.foregroundColor] = color
         }
-        attributes[.baselineOffset] = -1.0
+        attributes[.baselineOffset] = -4.0
         return NSAttributedString(string: " \(text)", attributes: attributes)
     }
 
@@ -151,7 +151,7 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .paragraphStyle: paragraph,
-            .baselineOffset: -1.0
+            .baselineOffset: -4.0
         ]
         return NSAttributedString(string: text, attributes: attributes)
     }
@@ -162,7 +162,7 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
     ) -> NSAttributedString {
         let attachment = NSTextAttachment()
         attachment.image = speedBadgeImage(up: up, down: down)
-        attachment.bounds = NSRect(x: 0, y: -1, width: 34, height: 18)
+        attachment.bounds = NSRect(x: 0, y: -4, width: 34, height: 18)
         return NSAttributedString(attachment: attachment)
     }
 
@@ -461,7 +461,7 @@ private final class MenuBarBallAnimator {
         NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
 
         let centerX = size.width / 2
-        let centerY = (size.height / 2) + yOffset
+        let centerY = (size.height / 2) + yOffset - 3
         let dotRect = NSRect(
             x: (centerX - dotDiameter / 2).rounded(),
             y: (centerY - dotDiameter / 2).rounded(),
