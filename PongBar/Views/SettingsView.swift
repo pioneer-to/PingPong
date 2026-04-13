@@ -14,9 +14,11 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @Environment(NetworkMonitor.self) private var monitor
     @AppStorage("pingInterval") private var pingInterval: Double = 3.0
+    @AppStorage(Config.Keys.pingPongAnimationSpeed) private var pingPongAnimationSpeed: Double = Config.Defaults.pingPongAnimationSpeed
     @AppStorage("launchAtLogin") private var launchAtLogin: Bool = false
     @AppStorage("showPublicIP") private var showPublicIP: Bool = true
     @AppStorage("menuBarDisplayMode") private var menuBarDisplayMode: String = "dot"
+    @AppStorage(Config.Keys.pingPongAudioEnabled) private var pingPongAudioEnabled: Bool = Config.Defaults.pingPongAudioEnabled
     @AppStorage(Config.Keys.localDeviceSpeedInterval) private var localDeviceSpeedInterval: Double = Config.Defaults.localDeviceSpeedInterval
     @AppStorage(Config.Keys.speedQualityLowThreshold) private var speedQualityLowThreshold: Double = Config.Defaults.speedQualityLowThreshold
     @AppStorage(Config.Keys.speedQualityMediumThreshold) private var speedQualityMediumThreshold: Double = Config.Defaults.speedQualityMediumThreshold
@@ -109,6 +111,17 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                     .frame(width: 200)
                 }
+
+                HStack {
+                    Text("Ping pong animation speed")
+                    Spacer()
+                    Slider(value: $pingPongAnimationSpeed, in: 0.5...1.5, step: 0.1)
+                        .frame(width: 180)
+                    Text(String(format: "%.1fx", pingPongAnimationSpeed))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 42, alignment: .trailing)
+                }
             }
 
             Section("System") {
@@ -128,6 +141,10 @@ struct SettingsView: View {
                             monitor.publicIPPingResult = nil
                         }
                     }
+            }
+
+            Section("Audio") {
+                Toggle("Turn on ping pong audio", isOn: $pingPongAudioEnabled)
             }
         }
         .formStyle(.grouped)
@@ -314,10 +331,10 @@ struct SettingsView: View {
                     Text("Speed refresh interval")
                     Spacer()
                     Picker("", selection: $localDeviceSpeedInterval) {
-                        Text("5s").tag(5.0)
-                        Text("10s").tag(10.0)
                         Text("30s").tag(30.0)
                         Text("60s").tag(60.0)
+                        Text("5m").tag(300.0)
+                        Text("15m").tag(900.0)
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 220)

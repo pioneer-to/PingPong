@@ -12,6 +12,13 @@ public struct TR064Host: Codable {
 public enum TR064HostService {
     private static let logger = Logger(subsystem: "de.mice.fritzbox.tr064", category: "TR064HostService")
     private static let fixedRouterHost = "192.168.178.1"
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        return URLSession(configuration: config)
+    }()
+    private static let hostFetchCoordinator = TR064HostFetchCoordinator()
 
     /// Fetch host list from Fritz!Box router using TR-064 Hosts service.
     /// - Parameters:
@@ -26,14 +33,17 @@ public enum TR064HostService {
         password: String,
         timeout: TimeInterval = 5
     ) async -> [TR064Host]? {
-        await fetchHostsInternal(
-            routerIP: routerIP,
-            username: username,
-            password: password,
-            timeout: timeout,
-            useHTTPS: false,
-            allowEnumerationFallback: true
-        )
+        let key = hostFetchKey(routerIP: routerIP, username: username, password: password)
+        return await hostFetchCoordinator.run(key: key) {
+            await fetchHostsInternal(
+                routerIP: routerIP,
+                username: username,
+                password: password,
+                timeout: timeout,
+                useHTTPS: false,
+                allowEnumerationFallback: true
+            )
+        }
     }
 
     public static func fetchHostsFast(
@@ -42,14 +52,17 @@ public enum TR064HostService {
         password: String,
         timeout: TimeInterval = 4
     ) async -> [TR064Host]? {
-        await fetchHostsInternal(
-            routerIP: routerIP,
-            username: username,
-            password: password,
-            timeout: timeout,
-            useHTTPS: false,
-            allowEnumerationFallback: false
-        )
+        let key = hostFetchKey(routerIP: routerIP, username: username, password: password)
+        return await hostFetchCoordinator.run(key: key) {
+            await fetchHostsInternal(
+                routerIP: routerIP,
+                username: username,
+                password: password,
+                timeout: timeout,
+                useHTTPS: false,
+                allowEnumerationFallback: false
+            )
+        }
     }
 
     private static func fetchHostsInternal(
@@ -111,31 +124,35 @@ public enum TR064HostService {
         }
         print("[TR064] step2: SUCCESS - path=\(hostListPath)")
 
-        // Step 3: GET the host list XML at hostListPath.
-        // Fritz!Box often serves this path on the web interface host (default HTTP port),
-        // not on TR-064 port 49000.
-        print("[TR064] step3: resolving URL from path")
-        guard let hostListURL = resolveHostListURL(hostListPath, routerIP: routerIP) else {
-            print("[TR064] step3: FAILED - could not resolve URL")
-            logger.error("Invalid host list URL: \(hostListPath, privacy: .public)")
+        // Step 3: Extract SID from host list path and query /data.lua on port 80.
+        guard let sid = extractSID(from: hostListPath) else {
+            logger.error("Invalid host list SID in path: \(hostListPath, privacy: .public)")
             return nil
         }
-        print("[TR064] step3: fetching \(hostListURL.absoluteString)")
+        let routerHost = normalizedRouterHost(from: routerIP)
+        guard let dataURL = URL(string: "http://\(routerHost)/data.lua") else {
+            logger.error("Invalid data.lua URL for host: \(routerHost, privacy: .public)")
+            return nil
+        }
+        print("[TR064] step3: fetching \(dataURL.absoluteString)")
 
         do {
-            let data = try await fetchXMLData(
-                from: hostListURL,
-                username: username,
-                password: password,
-                timeout: timeout
-            )
-            let hosts = parseHostsXML(data: data)
+            var request = URLRequest(url: dataURL)
+            request.httpMethod = "POST"
+            request.timeoutInterval = timeout
+            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            request.httpBody = "sid=\(sid)&page=netDev&xhrId=all".data(using: .utf8)
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                return nil
+            }
+            let hosts = parseHostsFromDataLua(data: data)
             print("[TR064] step3: SUCCESS - \(data.count) bytes, \(hosts?.count ?? 0) hosts parsed")
             if let hosts {
                 return hosts
             }
             guard allowEnumerationFallback else { return nil }
-            logger.debug("Failed to parse host list XML at \(hostListURL.absoluteString, privacy: .public), fallback to host enumeration")
+            logger.debug("Failed to parse data.lua JSON at \(dataURL.absoluteString, privacy: .public), fallback to host enumeration")
             return await fetchHostsByEnumeration(
                 baseURL: baseURL,
                 username: username,
@@ -144,7 +161,7 @@ public enum TR064HostService {
             )
         } catch {
             print("[TR064] step3: FAILED - \(error)")
-            logger.error("Failed to GET host list XML at \(hostListURL.absoluteString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            logger.error("Failed to POST data.lua at \(dataURL.absoluteString, privacy: .public): \(error.localizedDescription, privacy: .public)")
             guard allowEnumerationFallback else { return nil }
             return await fetchHostsByEnumeration(
                 baseURL: baseURL,
@@ -152,34 +169,6 @@ public enum TR064HostService {
                 password: password,
                 timeout: timeout
             )
-        }
-    }
-
-    private static func fetchDirectHostsXML(
-        baseURL: URL,
-        username: String,
-        password: String,
-        timeout: TimeInterval
-    ) async -> [TR064Host]? {
-        // Common fallback path is /hosts/hosts (no session id) on the web interface host.
-        guard let routerHost = baseURL.host,
-              let hostsURL = URL(string: "http://\(routerHost)/hosts/hosts")
-        else {
-            logger.error("Invalid fallback hosts URL")
-            return nil
-        }
-        print("[TR064] fetchDirectHostsXML: trying \(hostsURL.absoluteString)")
-        do {
-            let data = try await fetchXMLData(
-                from: hostsURL,
-                username: username,
-                password: password,
-                timeout: timeout
-            )
-            return parseHostsXML(data: data)
-        } catch {
-            logger.error("Failed to GET fallback hosts XML at \(hostsURL.absoluteString, privacy: .public): \(error.localizedDescription, privacy: .public)")
-            return nil
         }
     }
 
@@ -223,14 +212,25 @@ public enum TR064HostService {
         return nil
     }
 
-    private static func parseHostsXML(data: Data) -> [TR064Host]? {
-        let parser = HostsXMLParser()
-        let xmlParser = XMLParser(data: data)
-        xmlParser.delegate = parser
-        if xmlParser.parse() {
-            return parser.hosts
+    private static func parseHostsFromDataLua(data: Data) -> [TR064Host]? {
+        do {
+            let decoded = try JSONDecoder().decode(DataLuaResponse.self, from: data)
+            let devices = decoded.data?.active ?? []
+            print("[TR064] parseHostsFromDataLua: decoded \(devices.count) active devices")
+            return devices.compactMap { device in
+                guard let mac = device.mac, !mac.isEmpty else { return nil }
+                return TR064Host(
+                    mac: mac,
+                    ip: device.ipv4?.ip,
+                    active: ["led_green", "globe_online"].contains(device.state?.className),
+                    name: device.name ?? "Unknown",
+                    speedMbps: parseDownstreamMbps(from: device.properties ?? [])
+                )
+            }
+        } catch {
+            print("[TR064] parseHostsFromDataLua FAILED: \(error)")
+            return nil
         }
-        return nil
     }
 
     /// Returns dictionary keyed by lowercased mac addresses (colon-separated if present)
@@ -517,23 +517,31 @@ public enum TR064HostService {
         )
         if let soapResponse = soapResult.data {
             if let hostListPath = parseHostListPath(fromSOAPResponse: soapResponse) {
-                guard let hostListURL = resolveHostListURL(hostListPath, routerIP: routerIP) else {
-                    return (nil, "Invalid host list URL: \(hostListPath)")
+                guard let sid = extractSID(from: hostListPath) else {
+                    return (nil, "Invalid host list SID in path: \(hostListPath)")
+                }
+                let routerHost = normalizedRouterHost(from: routerIP)
+                guard let dataURL = URL(string: "http://\(routerHost)/data.lua") else {
+                    return (nil, "Invalid data.lua URL for host: \(routerHost)")
                 }
 
                 do {
-                    let data = try await fetchXMLData(
-                        from: hostListURL,
-                        username: username,
-                        password: password,
-                        timeout: timeout
-                    )
-                    guard let hosts = parseHostsXML(data: data) else {
-                        return (nil, "Failed to parse host list XML")
+                    var request = URLRequest(url: dataURL)
+                    request.httpMethod = "POST"
+                    request.timeoutInterval = timeout
+                    request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+                    request.httpBody = "sid=\(sid)&page=netDev&xhrId=all".data(using: .utf8)
+                    let (data, response) = try await session.data(for: request)
+                    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                        return (nil, "POST data.lua failed with HTTP \(status)")
+                    }
+                    guard let hosts = parseHostsFromDataLua(data: data) else {
+                        return (nil, "Failed to parse data.lua JSON")
                     }
                     return (hosts, nil)
                 } catch {
-                    return (nil, "GET host list failed: \(error.localizedDescription)")
+                    return (nil, "POST data.lua failed: \(error.localizedDescription)")
                 }
             } else {
                 let enumeration = await fetchHostsByEnumerationWithError(
@@ -732,33 +740,6 @@ public enum TR064HostService {
         }
 
         return (speeds, diagnostics, nil)
-    }
-
-    private static func fetchDirectHostsXMLWithError(
-        baseURL: URL,
-        username: String,
-        password: String,
-        timeout: TimeInterval
-    ) async -> (hosts: [TR064Host]?, error: String?) {
-        guard let routerHost = baseURL.host,
-              let hostsURL = URL(string: "http://\(routerHost)/hosts/hosts")
-        else {
-            return (nil, "Invalid fallback hosts URL")
-        }
-        do {
-            let data = try await fetchXMLData(
-                from: hostsURL,
-                username: username,
-                password: password,
-                timeout: timeout
-            )
-            guard let hosts = parseHostsXML(data: data) else {
-                return (nil, "Failed to parse fallback hosts XML")
-            }
-            return (hosts, nil)
-        } catch {
-            return (nil, "Fallback GET failed: \(error.localizedDescription)")
-        }
     }
 
     private static func sendSOAPWithError(
@@ -981,49 +962,20 @@ public enum TR064HostService {
         fixedRouterHost
     }
 
-    private static func resolveHostListURL(_ hostListPath: String, routerIP: String) -> URL? {
-        let correctedPath = hostListPath.replacingOccurrences(of: "devicehostlist.lua", with: "hostlist.lua")
-        if let absolute = URL(string: correctedPath), absolute.scheme != nil {
-            return absolute
-        }
-        let host = normalizedRouterHost(from: routerIP)
-        let path = correctedPath.hasPrefix("/") ? correctedPath : "/" + correctedPath
-        return URL(string: "http://\(host)\(path)")
-    }
-
-    private static func fetchXMLData(
-        from url: URL,
-        username: String,
-        password: String,
-        timeout: TimeInterval
-    ) async throws -> Data {
-        print("[TR064] fetchXMLData: url=\(url.absoluteString) hasSID=\(containsSID(url))")
-        if containsSID(url) {
-            let (data, response) = try await URLSession.shared.data(from: url)
-            if let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
-                return data
-            }
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw FritzDigestAuthError.httpStatus(status, body)
-        }
-
-        let (data, _) = try await FritzDigestAuth.get(
-            url: url,
-            username: username,
-            password: password,
-            timeout: timeout
-        )
-        return data
-    }
-
-    private static func containsSID(_ url: URL) -> Bool {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let queryItems = components.queryItems
+    private static func extractSID(from path: String) -> String? {
+        guard let components = URLComponents(string: "http://placeholder" + path),
+              let sid = components.queryItems?.first(where: { $0.name == "sid" })?.value
         else {
-            return false
+            return nil
         }
-        return queryItems.contains { $0.name.caseInsensitiveCompare("sid") == .orderedSame }
+        return sid
+    }
+
+    private static func hostFetchKey(routerIP: String, username: String, password: String) -> String {
+        let host = normalizedRouterHost(from: routerIP).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let user = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pass = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(host)|\(user)|\(pass)"
     }
 
     private static func normalizeMACToKey(_ mac: String) -> String {
@@ -1081,6 +1033,24 @@ public enum TR064HostService {
             return nil
         }
         return Double(String(raw[range]))
+    }
+
+    private static func parseDownstreamMbps(from properties: [DataLuaProperty]) -> Double? {
+        guard let regex = try? NSRegularExpression(pattern: "([0-9]+(?:[\\.,][0-9]+)?)\\s*/\\s*([0-9]+(?:[\\.,][0-9]+)?)\\s*Mbit/s") else {
+            return nil
+        }
+        var best: Double?
+        for prop in properties {
+            guard let text = prop.txt else { continue }
+            let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+            guard let match = regex.firstMatch(in: text, options: [], range: nsRange),
+                  let rxRange = Range(match.range(at: 2), in: text)
+            else { continue }
+            let normalized = String(text[rxRange]).replacingOccurrences(of: ",", with: ".")
+            guard let value = Double(normalized) else { continue }
+            best = max(best ?? value, value)
+        }
+        return best
     }
 
     private static func speedCandidateTags(in xml: String) -> [String] {
@@ -1229,6 +1199,103 @@ public enum TR064HostService {
     }
 }
 
+private actor TR064HostFetchCoordinator {
+    private struct CacheEntry {
+        let result: [TR064Host]?
+        let fetchedAt: Date
+    }
+
+    private let minimumRefreshInterval: TimeInterval = 30
+    private var inFlight: [String: Task<[TR064Host]?, Never>] = [:]
+    private var cache: [String: CacheEntry] = [:]
+
+    func run(key: String, operation: @escaping @Sendable () async -> [TR064Host]?) async -> [TR064Host]? {
+        if let cached = cache[key], Date().timeIntervalSince(cached.fetchedAt) < minimumRefreshInterval {
+            return cached.result
+        }
+        if let existing = inFlight[key] {
+            return await existing.value
+        }
+        let task = Task { await operation() }
+        inFlight[key] = task
+        let result = await task.value
+        inFlight[key] = nil
+        cache[key] = CacheEntry(result: result, fetchedAt: Date())
+        return result
+    }
+}
+
+private struct DataLuaResponse: Decodable {
+    let data: DataLuaPayload?
+}
+
+private struct DataLuaPayload: Decodable {
+    let active: [DataLuaDevice]?
+    let fbox: [DataLuaDevice]?
+    let fboxOther: [DataLuaDevice]?
+
+    enum CodingKeys: String, CodingKey {
+        case active
+        case fbox
+        case fboxOther = "fbox_other"
+    }
+}
+
+private struct DataLuaDevice: Decodable {
+    let mac: String?
+    let name: String?
+    let type: String?
+    let port: String?
+    let uid: String?
+    let state: DataLuaState?
+    let ipv4: DataLuaIPv4?
+    let properties: [DataLuaProperty]?
+    let ownClientDevice: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case mac
+        case name
+        case type
+        case port
+        case uid = "UID"
+        case state
+        case ipv4
+        case properties
+        case ownClientDevice = "own_client_device"
+    }
+}
+
+private struct DataLuaState: Decodable {
+    let className: String?
+
+    enum CodingKeys: String, CodingKey {
+        case className = "class"
+    }
+}
+
+private struct DataLuaIPv4: Decodable {
+    let ip: String?
+    let addrtype: String?
+    let dhcp: String?
+    let lastused: String?
+    let node: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ip
+        case addrtype
+        case dhcp
+        case lastused
+        case node = "_node"
+    }
+}
+
+private struct DataLuaProperty: Decodable {
+    let txt: String?
+    let onclick: String?
+    let icon: String?
+    let link: String?
+}
+
 // MARK: - XML Parsers
 
 private class HostListPathParser: NSObject, XMLParserDelegate {
@@ -1261,88 +1328,5 @@ private class HostListPathParser: NSObject, XMLParserDelegate {
             currentElement = nil
             foundCharacters = ""
         }
-    }
-}
-
-private class HostsXMLParser: NSObject, XMLParserDelegate {
-    private(set) var hosts = [TR064Host]()
-    private var currentElement: String?
-    private var currentMAC: String?
-    private var currentIP: String?
-    private var currentActive: Bool = false
-    private var currentName: String?
-    private var currentSpeed: Double?
-    private var insideItem = false
-    private var foundCharacters = ""
-
-    func parser(_ parser: XMLParser, didStartElement elementName: String,
-                namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String : String] = [:]) {
-        if elementName == "Item" {
-            insideItem = true
-            currentMAC = nil
-            currentIP = nil
-            currentActive = false
-            currentName = nil
-            currentSpeed = nil
-        }
-        currentElement = elementName
-        foundCharacters = ""
-    }
-
-    func parser(_ parser: XMLParser, foundCharacters string: String) {
-        guard currentElement != nil else { return }
-        foundCharacters += string
-    }
-
-    func parser(_ parser: XMLParser, didEndElement elementName: String,
-                namespaceURI: String?, qualifiedName qName: String?) {
-        guard let current = currentElement else { return }
-        if current == elementName {
-            if insideItem {
-                let trimmed = foundCharacters.trimmingCharacters(in: .whitespacesAndNewlines)
-                switch current {
-                case "MACAddress":
-                    currentMAC = trimmed
-                case "IPAddress":
-                    currentIP = trimmed.isEmpty ? nil : trimmed
-                case "Active":
-                    currentActive = (trimmed == "1" || trimmed.lowercased() == "true")
-                case "HostName":
-                    currentName = trimmed.isEmpty ? nil : trimmed
-                case "X_AVM-DE_Speed", "X_AVM_DE_Speed", "NewX_AVM-DE_Speed", "NewX_AVM_DE_Speed", "Speed", "NewSpeed":
-                    currentSpeed = parseNumericSpeed(trimmed)
-                default:
-                    break
-                }
-            }
-            if elementName == "Item" {
-                insideItem = false
-                if let mac = currentMAC, !mac.isEmpty {
-                    let host = TR064Host(
-                        mac: mac,
-                        ip: currentIP,
-                        active: currentActive,
-                        name: currentName,
-                        speedMbps: currentSpeed
-                    )
-                    hosts.append(host)
-                }
-            }
-            currentElement = nil
-            foundCharacters = ""
-        }
-    }
-
-    private func parseNumericSpeed(_ raw: String) -> Double? {
-        if let direct = Double(raw) {
-            return direct
-        }
-        guard let regex = try? NSRegularExpression(pattern: "([0-9]+(?:\\.[0-9]+)?)"),
-              let match = regex.firstMatch(in: raw, range: NSRange(raw.startIndex..<raw.endIndex, in: raw)),
-              let range = Range(match.range(at: 1), in: raw)
-        else {
-            return nil
-        }
-        return Double(String(raw[range]))
     }
 }

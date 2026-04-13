@@ -177,11 +177,24 @@ struct FritzDigestAuth {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = timeout
         let session = URLSession(configuration: config)
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw FritzDigestAuthError.invalidResponse
+
+        var attempt = 0
+        while true {
+            attempt += 1
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw FritzDigestAuthError.invalidResponse
+                }
+                return (data, http)
+            } catch {
+                if attempt < 3, isTransientLocalNetworkPermissionError(error) {
+                    try? await Task.sleep(for: .seconds(1))
+                    continue
+                }
+                throw error
+            }
         }
-        return (data, http)
     }
 
     private static func digestChallengeHeader(from response: HTTPURLResponse) -> String? {
@@ -316,5 +329,41 @@ struct FritzDigestAuth {
     private static func randomHex(length: Int) -> String {
         let chars = Array("0123456789abcdef")
         return String((0..<length).map { _ in chars.randomElement() ?? "0" })
+    }
+
+    private static func isTransientLocalNetworkPermissionError(_ error: Error) -> Bool {
+        if let urlError = error as? URLError, urlError.code == .timedOut {
+            return hasCFStream2102(error)
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorTimedOut {
+            return hasCFStream2102(error)
+        }
+        return false
+    }
+
+    private static func hasCFStream2102(_ error: Error) -> Bool {
+        var queue: [NSError] = [error as NSError]
+        var visited = Set<ObjectIdentifier>()
+        while let current = queue.popLast() {
+            let id = ObjectIdentifier(current)
+            if visited.contains(id) { continue }
+            visited.insert(id)
+
+            let code = (current.userInfo["_kCFStreamErrorCodeKey"] as? Int)
+                ?? (current.userInfo["kCFStreamErrorCodeKey"] as? Int)
+            let domain = (current.userInfo["_kCFStreamErrorDomainKey"] as? Int)
+                ?? (current.userInfo["kCFStreamErrorDomainKey"] as? Int)
+            if code == -2102, domain == 4 {
+                return true
+            }
+
+            for value in current.userInfo.values {
+                if let nested = value as? NSError {
+                    queue.append(nested)
+                }
+            }
+        }
+        return false
     }
 }

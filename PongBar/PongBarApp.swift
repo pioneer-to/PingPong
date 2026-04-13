@@ -31,6 +31,7 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
     private let popover = NSPopover()
     private var updateTimer: Timer?
     private let ballAnimator = MenuBarBallAnimator()
+    private let sounds = SoundManager.shared
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -54,6 +55,9 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
         popover.behavior = .transient
 
         updateStatusItem()
+        ballAnimator.onAudibleBounce = { [weak self] boundary in
+            self?.playBounceSound(boundary)
+        }
         updateTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.updateStatusItem()
@@ -88,7 +92,9 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
         let internetDotIsRed = internetResult?.isReachable == false
         let internetLatencyTooHigh = (internetResult?.latency ?? 0) > Config.latencyFairThreshold
 
-        ballAnimator.setOneWayDuration(Self.oneWayDuration(for: totalBytesPerSecond))
+        let baseDuration = Self.oneWayDuration(for: totalBytesPerSecond)
+        let speedMultiplier = Config.pingPongAnimationSpeed
+        ballAnimator.setOneWayDuration(max(0.05, baseDuration / speedMultiplier))
         ballAnimator.updateNetworkState(
             totalBytesPerSecond: totalBytesPerSecond,
             uploadBytesPerSecond: uploadBytesPerSecond,
@@ -122,6 +128,16 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
         default:
             statusItem?.length = NSStatusItem.squareLength
             button.attributedTitle = NSAttributedString(string: "")
+        }
+    }
+
+    private func playBounceSound(_ boundary: MenuBarBounceBoundary) {
+        guard UserDefaults.standard.bool(forKey: Config.Keys.pingPongAudioEnabled) else { return }
+        switch boundary {
+        case .ceiling:
+            sounds.playPing(pitch: 600)
+        case .floor:
+            sounds.playPing(pitch: -400)
         }
     }
 
@@ -288,6 +304,11 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private enum MenuBarBounceBoundary {
+    case ceiling
+    case floor
+}
+
 @MainActor
 @Observable
 private final class MenuBarBallAnimator {
@@ -312,9 +333,17 @@ private final class MenuBarBallAnimator {
     private var hasZeroTrafficSignal: Bool = false
     private var hasRedInternetSignal: Bool = false
     private var prefersCeilingBounce: Bool = false
+    private var bounceSoundMode: BounceSoundMode = .both
     private var zeroTrafficDuration: TimeInterval = 0
     private var isOutageMode: Bool = false
     private let zeroTrafficGraceSeconds: TimeInterval = 3.0
+    var onAudibleBounce: ((MenuBarBounceBoundary) -> Void)?
+
+    private enum BounceSoundMode {
+        case floorOnly
+        case ceilingOnly
+        case both
+    }
 
     init() {
         frameImages = Self.makeFrames()
@@ -336,6 +365,14 @@ private final class MenuBarBallAnimator {
     ) {
         hasZeroTrafficSignal = totalBytesPerSecond <= 0.0
         hasRedInternetSignal = internetDotIsRed || (internetDotIsRed && internetLatencyTooHigh)
+
+        if downloadBytesPerSecond >= (uploadBytesPerSecond * 3.0) && downloadBytesPerSecond > 0 {
+            bounceSoundMode = .floorOnly
+        } else if uploadBytesPerSecond >= (downloadBytesPerSecond * 3.0) && uploadBytesPerSecond > 0 {
+            bounceSoundMode = .ceilingOnly
+        } else {
+            bounceSoundMode = .both
+        }
 
         // Switch to ceiling-bounce mode only when upload is clearly dominant.
         let minimumDirectionalTraffic = 8_192.0
@@ -399,6 +436,8 @@ private final class MenuBarBallAnimator {
 
     private func stepPhysics(dt: TimeInterval) {
         let duration = max(0.08, currentOneWayDuration)
+        let velocityBeforeStep = velocity
+        var emittedCeilingThisStep = false
 
         // For a ballistic arc that traverses one normalized half-cycle in `duration`.
         let gravity = 2.0 / (duration * duration)
@@ -419,6 +458,8 @@ private final class MenuBarBallAnimator {
             position = bounceBoundary
             let reflected = abs(velocity) * 0.82
             velocity = bounceAwaySign * ((reflected * 0.35) + (desiredLaunchVelocity * 0.65))
+            triggerBoundarySound(prefersCeilingBounce ? .ceiling : .floor)
+            emittedCeilingThisStep = prefersCeilingBounce
         }
 
         if (prefersCeilingBounce && position < oppositeBoundary) || (!prefersCeilingBounce && position > oppositeBoundary) {
@@ -426,6 +467,30 @@ private final class MenuBarBallAnimator {
             if (prefersCeilingBounce && velocity < 0) || (!prefersCeilingBounce && velocity > 0) {
                 velocity = -bounceAwaySign * max(0.02, abs(velocity) * 0.20)
             }
+            triggerBoundarySound(prefersCeilingBounce ? .floor : .ceiling)
+            emittedCeilingThisStep = !prefersCeilingBounce
+        }
+
+        // In floor-bounce mode, a ballistic arc may turn downward before touching the ceiling.
+        // Treat this apex as a "ceiling pong" unless audio policy says floor-only.
+        if !prefersCeilingBounce,
+           velocityBeforeStep > 0, velocity <= 0,
+           !emittedCeilingThisStep,
+           bounceSoundMode != .floorOnly {
+            onAudibleBounce?(.ceiling)
+        }
+    }
+
+    private func triggerBoundarySound(_ boundary: MenuBarBounceBoundary) {
+        switch bounceSoundMode {
+        case .both:
+            onAudibleBounce?(boundary)
+        case .floorOnly where boundary == .floor:
+            onAudibleBounce?(boundary)
+        case .ceilingOnly where boundary == .ceiling:
+            onAudibleBounce?(boundary)
+        default:
+            break
         }
     }
 

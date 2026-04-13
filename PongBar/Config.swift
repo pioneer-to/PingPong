@@ -18,10 +18,19 @@ enum Config {
         return val > 0 ? val : Defaults.pingInterval
     }
 
+    /// Ping-pong animation speed multiplier for menu bar dot.
+    /// 1.0 = current/default speed, higher = faster animation.
+    static var pingPongAnimationSpeed: Double {
+        let val = UserDefaults.standard.double(forKey: Keys.pingPongAnimationSpeed)
+        let candidate = val > 0 ? val : Defaults.pingPongAnimationSpeed
+        return max(0.5, min(candidate, 1.5))
+    }
+
     /// Local device speed refresh interval in seconds.
     static var localDeviceSpeedInterval: TimeInterval {
         let val = UserDefaults.standard.double(forKey: Keys.localDeviceSpeedInterval)
-        return val > 0 ? val : Defaults.localDeviceSpeedInterval
+        let candidate = val > 0 ? val : Defaults.localDeviceSpeedInterval
+        return max(30, candidate)
     }
 
     /// Ping timeout in seconds (clamped 1 to pingInterval).
@@ -216,6 +225,10 @@ enum Config {
     static var speedQualityHighThreshold: Double {
         UserDefaults.standard.doubleOrNil(forKey: Keys.speedQualityHighThreshold) ?? Defaults.speedQualityHighThreshold
     }
+
+    static var pingPongAudioEnabled: Bool {
+        UserDefaults.standard.object(forKey: Keys.pingPongAudioEnabled) as? Bool ?? Defaults.pingPongAudioEnabled
+    }
 }
 
 // MARK: - Default Values
@@ -223,6 +236,7 @@ enum Config {
 extension Config {
     enum Defaults {
         static let pingInterval: TimeInterval = 3.0
+        static let pingPongAnimationSpeed: Double = 1.0
         static let localDeviceSpeedInterval: TimeInterval = 60.0
         static let pingTimeout: Int = 2
         static let dnsTimeout: Int = 3
@@ -259,6 +273,7 @@ extension Config {
         static let speedQualityLowThreshold: Double = 50
         static let speedQualityMediumThreshold: Double = 150
         static let speedQualityHighThreshold: Double = 400
+        static let pingPongAudioEnabled: Bool = false
 
         static let networkSwitchGracePings: Int = 3
 
@@ -283,6 +298,7 @@ extension Config {
 extension Config {
     enum Keys {
         static let pingInterval = "pingInterval"
+        static let pingPongAnimationSpeed = "pingPongAnimationSpeed"
         static let localDeviceSpeedInterval = "localDeviceSpeedInterval"
         static let pingTimeout = "pingTimeout"
         static let dnsTimeout = "dnsTimeout"
@@ -327,6 +343,7 @@ extension Config {
         static let speedQualityLowThreshold = "speedQualityLowThreshold"
         static let speedQualityMediumThreshold = "speedQualityMediumThreshold"
         static let speedQualityHighThreshold = "speedQualityHighThreshold"
+        static let pingPongAudioEnabled = "pingPongAudioEnabled"
         
         static let fritzUsername = "fritzUsername"
         static let fritzPassword = "fritzPassword"
