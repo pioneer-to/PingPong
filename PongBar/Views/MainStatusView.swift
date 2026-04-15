@@ -92,6 +92,8 @@ struct MainStatusView: View {
                         .frame(width: 20)
                     Text("Device")
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Ping")
+                        .frame(width: 48, alignment: .trailing)
                     Text("Signal")
                         .frame(width: 56, alignment: .trailing)
                     Text("Mbit/s")
@@ -103,26 +105,86 @@ struct MainStatusView: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 12)
                 .padding(.bottom, 2)
+                
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(monitor.localDevices) { device in
+                            let currentDeviceIP = monitor.interfaceInfo?.ipAddress?.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let deviceIP = (monitor.localResults[device.id]?.detail ?? device.ipAddress).trimmingCharacters(in: .whitespacesAndNewlines)
+                            let isCurrentDevice = currentDeviceIP != nil && !deviceIP.isEmpty && currentDeviceIP == deviceIP
+                            Button {
+                                navigate(.localDeviceSpeedDetail(device))
+                            } label: {
+                                LocalDeviceRowView(
+                                    device: device,
+                                    result: monitor.localResults[device.id],
+                                    speedMbps: monitor.localSpeeds[device.id],
+                                    signalStrengthPercent: monitor.localSignalStrengths[device.id],
+                                    band: monitor.localBands[device.id],
+                                    showStatusIndicator: !isCurrentDevice,
+                                    showDisclosure: true,
+                                    isCurrentDevice: isCurrentDevice
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .frame(maxHeight: 250)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
-            ForEach(monitor.localDevices) { device in
-                let currentDeviceIP = monitor.interfaceInfo?.ipAddress?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let deviceIP = (monitor.localResults[device.id]?.detail ?? device.ipAddress).trimmingCharacters(in: .whitespacesAndNewlines)
-                let isCurrentDevice = currentDeviceIP != nil && !deviceIP.isEmpty && currentDeviceIP == deviceIP
-                Button {
-                    navigate(.localDeviceSpeedDetail(device))
-                } label: {
-                    LocalDeviceRowView(
-                        device: device,
-                        result: monitor.localResults[device.id],
-                        speedMbps: monitor.localSpeeds[device.id],
-                        signalStrengthPercent: monitor.localSignalStrengths[device.id],
-                        band: monitor.localBands[device.id],
-                        showStatusIndicator: !isCurrentDevice,
-                        showDisclosure: true
-                    )
+            // DECT Devices
+            if !monitor.dectDevices.isEmpty {
+                Divider()
+                    .padding(.vertical, 4)
+
+                HStack(spacing: 8) {
+                    Text("")
+                        .frame(width: 14)
+                    Text("")
+                        .frame(width: 20)
+                    Text("DECT Device")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Model")
+                        .frame(width: 100, alignment: .trailing)
+                    Text("")
+                        .frame(width: 12)
                 }
-                .buttonStyle(.plain)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 2)
+                
+                ForEach(monitor.dectDevices) { device in
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(device.active ? Color.green : Color.red)
+                            .frame(width: 8, height: 8)
+                            .frame(width: 14)
+                        
+                        Image(systemName: "candybarphone")
+                            .frame(width: 20)
+                            .foregroundStyle(.secondary)
+                        
+                        Text(device.name)
+                            .font(.body)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        
+                        Text(device.model ?? "Unknown")
+                            .font(.system(.body, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(width: 100, alignment: .trailing)
+                        
+                        Text("")
+                            .frame(width: 12)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                }
             }
 
             Divider()
@@ -548,16 +610,9 @@ struct MainStatusView: View {
         if monitor.localDevices.isEmpty {
             await addLine("- No local devices configured")
         } else {
-            let selectedSpeedMap = await TR064HostService.speedMapWithDiagnostics(
-                routerIP: routerIP,
-                username: account,
-                password: password,
-                macAddresses: monitor.localDevices.map(\.macAddress)
-            )
             let detailStarted = Date()
             for device in monitor.localDevices {
                 let state = localMapEntry(for: device.macAddress, in: map)
-                let speedFromCurrentPath = localMapEntry(for: device.macAddress, in: selectedSpeedMap.speeds)
                 let hostFromList = fullHostList.first(where: {
                     $0.macAddress.lowercased().replacingOccurrences(of: "-", with: ":")
                     == device.macAddress.lowercased().replacingOccurrences(of: "-", with: ":")
@@ -572,15 +627,11 @@ struct MainStatusView: View {
                 let activeText = state?.active == true ? "online" : "offline"
                 let speedTextFromTag = attrs.speed.flatMap { Double($0) }.map(Formatters.localDeviceSpeed) ?? attrs.speed
                 let effectiveSpeedText = speedTextFromTag
-                    ?? speedFromCurrentPath.map(Formatters.localDeviceSpeed)
                     ?? "---"
                 await addLine("- \(device.displayName) [\(device.macAddress)] -> \(activeText)")
                 await addLine("  name=\(attrs.name ?? hostFromList?.originalName ?? "n/a"), mac=\(attrs.mac ?? device.macAddress), ip=\(attrs.ip ?? state?.ip ?? hostFromList?.ipAddress ?? "n/a")")
                 await addLine("  NewX_AVM-DE_Speed=\(effectiveSpeedText), NewX_AVM-DE_SignalStrength=\(attrs.signalStrength ?? "---"), NewX_AVM-DE_Mesh=\(attrs.mesh ?? "---")")
                 await addLine("  sourceAction=\(attrs.sourceAction), interface=\(attrs.interfaceType ?? "n/a"), active=\(attrs.active ?? "n/a"), diag=\(attrs.diagnostic)")
-                if speedTextFromTag == nil, let speedFromCurrentPath {
-                    await addLine("  speedFallback=current monitor path (\(Formatters.localDeviceSpeed(speedFromCurrentPath)))")
-                }
             }
             let detailElapsed = Date().timeIntervalSince(detailStarted)
             await addLine(String(format: "- Per-device attribute query duration: %.2fs", detailElapsed))

@@ -40,7 +40,8 @@ final class FritzBoxTR064Service {
         try await fetchHostSpeedsUnlocked(routerIP: routerIP, username: username, password: password)
     }
 
-    nonisolated private func fetchConnectedDevicesUnlocked(routerIP: String, username: String, password: String) async throws -> [LocalNetworkDevice] {
+    /// Fetches all active connected devices to the router using explicit credentials, returning raw TR064Host objects.
+    nonisolated func fetchConnectedTR064Hosts(routerIP: String, username: String, password: String) async throws -> [TR064Host] {
         let sanitizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let sanitizedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sanitizedUsername.isEmpty, !sanitizedPassword.isEmpty else {
@@ -55,22 +56,8 @@ final class FritzBoxTR064Service {
             password: sanitizedPassword,
             timeout: 15
         ) {
-            let mapped = hosts.compactMap { host -> LocalNetworkDevice? in
-                guard host.active else { return nil }
-                return LocalNetworkDevice(
-                    macAddress: host.mac,
-                    ipAddress: host.ip ?? "",
-                    originalName: host.name ?? "Unknown",
-                    customName: "",
-                    symbolName: "desktopcomputer",
-                    notifyConnectivityDown: false,
-                    usePing: false,
-                    pingSupported: nil,
-                    pingProbeLastCheckedAt: nil
-                )
-            }
             print("[TR064] fast path succeeded: \(hosts.count) hosts")
-            return mapped
+            return hosts
         }
 
         // Fallback to full enumeration when fast host-list path is unavailable.
@@ -81,8 +68,8 @@ final class FritzBoxTR064Service {
             password: sanitizedPassword
         )
 
-        var activeDevices: [LocalNetworkDevice] = []
-        try await withThrowingTaskGroup(of: LocalNetworkDevice?.self) { group in
+        var activeDevices: [TR064Host] = []
+        try await withThrowingTaskGroup(of: TR064Host?.self) { group in
             for i in 0..<totalHosts {
                 group.addTask {
                     guard let hostInfo = try? await self.getGenericHostEntry(
@@ -91,17 +78,14 @@ final class FritzBoxTR064Service {
                         username: sanitizedUsername,
                         password: sanitizedPassword
                     ) else { return nil }
-                    guard hostInfo.active else { return nil }
-                    return LocalNetworkDevice(
-                        macAddress: hostInfo.mac,
-                        ipAddress: hostInfo.ip,
-                        originalName: hostInfo.name,
-                        customName: "",
-                        symbolName: "desktopcomputer",
-                        notifyConnectivityDown: false,
-                        usePing: false,
-                        pingSupported: nil,
-                        pingProbeLastCheckedAt: nil
+                    return TR064Host(
+                        mac: hostInfo.mac,
+                        ip: hostInfo.ip,
+                        active: hostInfo.active,
+                        name: hostInfo.name,
+                        speedMbps: nil,
+                        band: nil,
+                        signalStrengthPercent: nil
                     )
                 }
             }
@@ -113,6 +97,24 @@ final class FritzBoxTR064Service {
             }
         }
         return activeDevices
+    }
+
+    nonisolated private func fetchConnectedDevicesUnlocked(routerIP: String, username: String, password: String) async throws -> [LocalNetworkDevice] {
+        let hosts = try await fetchConnectedTR064Hosts(routerIP: routerIP, username: username, password: password)
+        return hosts.compactMap { host -> LocalNetworkDevice? in
+            guard host.active else { return nil }
+            return LocalNetworkDevice(
+                macAddress: host.mac,
+                ipAddress: host.ip ?? "",
+                originalName: host.name ?? "Unknown",
+                customName: "",
+                symbolName: "desktopcomputer",
+                notifyConnectivityDown: false,
+                usePing: false,
+                pingSupported: nil,
+                pingProbeLastCheckedAt: nil
+            )
+        }
     }
 
     nonisolated private func fetchHostSpeedsUnlocked(routerIP: String, username: String, password: String) async throws -> [String: Double] {

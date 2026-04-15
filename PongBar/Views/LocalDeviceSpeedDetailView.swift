@@ -12,6 +12,8 @@ struct LocalDeviceSpeedDetailView: View {
     let device: LocalNetworkDevice
     var goBack: () -> Void
 
+    @Environment(PopoverState.self) private var popoverState
+
     @State private var selectedRange: TimeRange = .fifteenMin
     @State private var samples: [LocalDeviceSpeedSample] = []
     @State private var hoveredSample: LocalDeviceSpeedSample?
@@ -44,7 +46,7 @@ struct LocalDeviceSpeedDetailView: View {
             while !Task.isCancelled {
                 let interval = selectedRange.seconds <= 3600 ? Config.chartRefreshInterval : 30.0
                 try? await Task.sleep(for: .seconds(interval))
-                if timeOffset == 0 {
+                if timeOffset == 0 && popoverState.isVisible {
                     loadSamples()
                 }
             }

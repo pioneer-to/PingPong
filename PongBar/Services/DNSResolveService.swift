@@ -11,6 +11,16 @@ import SystemConfiguration
 
 /// Checks DNS resolution by querying the DNS server directly via UDP.
 enum DNSResolveService {
+    private static let cacheLock = NSLock()
+    private static var cachedServer: String?
+
+    /// Clears the cached DNS server so the next resolution call will fetch the active DNS configuration.
+    static func clearCache() {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        cachedServer = nil
+    }
+
     /// Send a DNS query to the active DNS server and measure RTT.
     static func resolve(domain: String? = nil) async -> Double? {
         let effectiveDomain = domain ?? Config.dnsTestDomain
@@ -26,44 +36,61 @@ enum DNSResolveService {
 
     /// Get the primary DNS server currently in use by the system resolver.
     static func getActiveDNSServer() -> String? {
+        cacheLock.lock()
+        if let cached = cachedServer {
+            cacheLock.unlock()
+            return cached
+        }
+        cacheLock.unlock()
+
         guard let store = SCDynamicStoreCreate(nil, "PongBar" as CFString, nil, nil) else { return nil }
+
+        var result: String? = nil
 
         // 1. Global DNS
         if let dict = SCDynamicStoreCopyValue(store, "State:/Network/Global/DNS" as CFString) as? [String: Any],
            let servers = dict["ServerAddresses"] as? [String],
            let first = servers.first {
-            return first
+            result = first
         }
 
         // 2. VPN service DNS
-        if let keys = SCDynamicStoreCopyKeyList(store, "State:/Network/Service/.*/DNS" as CFString) as? [String] {
+        if result == nil, let keys = SCDynamicStoreCopyKeyList(store, "State:/Network/Service/.*/DNS" as CFString) as? [String] {
             for key in keys {
                 if let dict = SCDynamicStoreCopyValue(store, key as CFString) as? [String: Any],
                    let iface = dict["InterfaceName"] as? String,
                    iface.hasPrefix("utun"),
                    let servers = dict["ServerAddresses"] as? [String],
                    let first = servers.first {
-                    return first
+                    result = first
+                    break
                 }
             }
             // 3. Any service DNS
-            for key in keys {
-                if let dict = SCDynamicStoreCopyValue(store, key as CFString) as? [String: Any],
-                   let servers = dict["ServerAddresses"] as? [String],
-                   let first = servers.first {
-                    return first
+            if result == nil {
+                for key in keys {
+                    if let dict = SCDynamicStoreCopyValue(store, key as CFString) as? [String: Any],
+                       let servers = dict["ServerAddresses"] as? [String],
+                       let first = servers.first {
+                        result = first
+                        break
+                    }
                 }
             }
         }
 
         // 4. Setup DNS
-        if let dict = SCDynamicStoreCopyValue(store, "Setup:/Network/Global/DNS" as CFString) as? [String: Any],
+        if result == nil, let dict = SCDynamicStoreCopyValue(store, "Setup:/Network/Global/DNS" as CFString) as? [String: Any],
            let servers = dict["ServerAddresses"] as? [String],
            let first = servers.first {
-            return first
+            result = first
         }
 
-        return nil
+        cacheLock.lock()
+        cachedServer = result
+        cacheLock.unlock()
+
+        return result
     }
 
     // MARK: - Raw UDP DNS Query

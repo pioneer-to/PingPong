@@ -784,13 +784,30 @@ private struct LocalDevicesEditor: View {
     @Environment(NetworkMonitor.self) private var monitor
     @State private var draggedDeviceID: UUID?
 
+    private var sortedLocalDevices: [(LocalNetworkDevice, Bool)] {
+        let currentDeviceIP = monitor.interfaceInfo?.ipAddress?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var egos: [(LocalNetworkDevice, Bool)] = []
+        var others: [(LocalNetworkDevice, Bool)] = []
+        for device in monitor.localDevices {
+            let deviceIP = (monitor.localResults[device.id]?.detail ?? device.ipAddress).trimmingCharacters(in: .whitespacesAndNewlines)
+            let isEgo = currentDeviceIP != nil && !deviceIP.isEmpty && currentDeviceIP == deviceIP
+            if isEgo {
+                egos.append((device, true))
+            } else {
+                others.append((device, false))
+            }
+        }
+        return egos + others
+    }
+
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 4) {
-                ForEach(monitor.localDevices) { device in
+                ForEach(sortedLocalDevices, id: \.0.id) { (device, isEgo) in
                     LocalDeviceSettingsRow(
                         device: device,
-                        result: monitor.localResults[device.id]
+                        result: monitor.localResults[device.id],
+                        isEgoDevice: isEgo
                     ) {
                         draggedDeviceID = device.id
                         return NSItemProvider(object: device.id.uuidString as NSString)
@@ -847,6 +864,7 @@ private struct LocalDeviceSettingsRow: View {
     @Environment(NetworkMonitor.self) private var monitor
     let device: LocalNetworkDevice
     let result: PingResult?
+    var isEgoDevice: Bool = false
     let onDragStart: () -> NSItemProvider
 
     @State private var isEditingName = false
@@ -860,10 +878,15 @@ private struct LocalDeviceSettingsRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "line.3.horizontal")
-                .foregroundStyle(.secondary)
-                .onDrag(onDragStart)
-                .help("Drag to reorder")
+            if isEgoDevice {
+                Image(systemName: "line.3.horizontal")
+                    .foregroundStyle(.clear)
+            } else {
+                Image(systemName: "line.3.horizontal")
+                    .foregroundStyle(.secondary)
+                    .onDrag(onDragStart)
+                    .help("Drag to reorder")
+            }
 
             Circle()
                 .fill(statusColor)
@@ -924,19 +947,40 @@ private struct LocalDeviceSettingsRow: View {
 
             Spacer()
 
-            Text(Formatters.localDeviceSpeed(monitor.localSpeeds[device.id]))
-                .font(.system(.caption, design: .monospaced))
-                .monospacedDigit()
-                .foregroundStyle(speedColor)
-
-            Button {
-                removeDevice()
-            } label: {
-                Image(systemName: "trash")
-                    .foregroundStyle(.red)
+            if device.usePing {
+                Text(Formatters.localDeviceSpeed(monitor.localSpeeds[device.id]))
+                    .font(.system(.caption, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(speedColor)
+            } else {
+                Text(Formatters.localDeviceSpeedPlain(monitor.localSpeeds[device.id]))
+                    .font(.system(.caption, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
             }
-            .buttonStyle(.plain)
-            .help("Remove device")
+
+            Toggle("Ping", isOn: Binding(
+                get: { device.usePing },
+                set: { newValue in saveUsePing(newValue) }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .labelsHidden()
+            .help("Ping this device continuously")
+
+            if !isEgoDevice {
+                Button {
+                    removeDevice()
+                } label: {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+                .help("Remove device")
+            } else {
+                Image(systemName: "trash")
+                    .foregroundStyle(.clear)
+            }
         }
         .padding(.vertical, 2)
     }
@@ -972,6 +1016,13 @@ private struct LocalDeviceSettingsRow: View {
         guard let index = monitor.localDevices.firstIndex(where: { $0.id == device.id }) else { return }
         var updated = monitor.localDevices
         updated[index].customName = value
+        monitor.saveLocalDevices(updated)
+    }
+
+    private func saveUsePing(_ value: Bool) {
+        guard let index = monitor.localDevices.firstIndex(where: { $0.id == device.id }) else { return }
+        var updated = monitor.localDevices
+        updated[index].usePing = value
         monitor.saveLocalDevices(updated)
     }
 

@@ -13,6 +13,8 @@ struct LocalDeviceSpeedSample: Identifiable {
     let id = UUID()
     let timestamp: Date
     let speedMbps: Double
+    let pingLatency: Double?
+    let signalStrength: Int?
 }
 
 enum LinkSpeedUnit {
@@ -65,11 +67,13 @@ final class LocalDeviceSpeedStorage: @unchecked Sendable {
     func recordSpeed(
         macAddress: String,
         value: Double,
+        pingLatency: Double? = nil,
+        signalStrength: Int? = nil,
         unit: LinkSpeedUnit = .mbitPerSecond,
         timestamp: Date = Date()
     ) {
         queue.async { [weak self] in
-            self?.recordSpeedInternal(macAddress: macAddress, value: value, unit: unit, timestamp: timestamp)
+            self?.recordSpeedInternal(macAddress: macAddress, value: value, pingLatency: pingLatency, signalStrength: signalStrength, unit: unit, timestamp: timestamp)
         }
     }
 
@@ -82,7 +86,7 @@ final class LocalDeviceSpeedStorage: @unchecked Sendable {
                 }
                 let key = normalizeMAC(macAddress)
                 let sql = """
-                SELECT timestamp, speed_mbps
+                SELECT timestamp, speed_mbps, ping_latency, signal_strength
                 FROM speed_samples
                 WHERE mac = ? AND timestamp >= ? AND timestamp <= ?
                 ORDER BY timestamp;
@@ -96,7 +100,15 @@ final class LocalDeviceSpeedStorage: @unchecked Sendable {
                     while sqlite3_step(stmt) == SQLITE_ROW {
                         let timestamp = Date(timeIntervalSince1970: sqlite3_column_double(stmt, 0))
                         let speed = sqlite3_column_double(stmt, 1)
-                        rows.append(LocalDeviceSpeedSample(timestamp: timestamp, speedMbps: speed))
+                        let pingLatency = sqlite3_column_type(stmt, 2) == SQLITE_NULL ? nil : sqlite3_column_double(stmt, 2)
+                        let signalStrength = sqlite3_column_type(stmt, 3) == SQLITE_NULL ? nil : Int(sqlite3_column_int(stmt, 3))
+                        
+                        rows.append(LocalDeviceSpeedSample(
+                            timestamp: timestamp, 
+                            speedMbps: speed,
+                            pingLatency: pingLatency,
+                            signalStrength: signalStrength
+                        ))
                     }
                 }
                 sqlite3_finalize(stmt)
@@ -121,10 +133,28 @@ final class LocalDeviceSpeedStorage: @unchecked Sendable {
             CREATE TABLE IF NOT EXISTS speed_samples (
                 timestamp REAL NOT NULL,
                 mac TEXT NOT NULL,
-                speed_mbps REAL NOT NULL
+                speed_mbps REAL NOT NULL,
+                ping_latency REAL,
+                signal_strength INTEGER
             );
             """
         )
+        migrateSchema()
+    }
+
+    private func migrateSchema() {
+        guard let db else { return }
+        var stmt: OpaquePointer?
+        
+        if sqlite3_prepare_v2(db, "SELECT ping_latency FROM speed_samples LIMIT 1;", -1, &stmt, nil) != SQLITE_OK {
+            _ = exec("ALTER TABLE speed_samples ADD COLUMN ping_latency REAL;")
+        }
+        sqlite3_finalize(stmt)
+
+        if sqlite3_prepare_v2(db, "SELECT signal_strength FROM speed_samples LIMIT 1;", -1, &stmt, nil) != SQLITE_OK {
+            _ = exec("ALTER TABLE speed_samples ADD COLUMN signal_strength INTEGER;")
+        }
+        sqlite3_finalize(stmt)
     }
 
     private func createIndexes() {
@@ -134,7 +164,7 @@ final class LocalDeviceSpeedStorage: @unchecked Sendable {
 
     private func prepareStatements() {
         guard let db else { return }
-        let sql = "INSERT INTO speed_samples (timestamp, mac, speed_mbps) VALUES (?, ?, ?);"
+        let sql = "INSERT INTO speed_samples (timestamp, mac, speed_mbps, ping_latency, signal_strength) VALUES (?, ?, ?, ?, ?);"
         sqlite3_prepare_v2(db, sql, -1, &insertStmt, nil)
     }
 
@@ -186,7 +216,7 @@ final class LocalDeviceSpeedStorage: @unchecked Sendable {
         }
     }
 
-    private func recordSpeedInternal(macAddress: String, value: Double, unit: LinkSpeedUnit, timestamp: Date) {
+    private func recordSpeedInternal(macAddress: String, value: Double, pingLatency: Double?, signalStrength: Int?, unit: LinkSpeedUnit, timestamp: Date) {
         guard let stmt = insertStmt, db != nil else { return }
         let mac = normalizeMAC(macAddress)
         guard cachedSelectedMACs.contains(mac) else { return }
@@ -199,6 +229,19 @@ final class LocalDeviceSpeedStorage: @unchecked Sendable {
         sqlite3_bind_double(stmt, 1, timestamp.timeIntervalSince1970)
         sqlite3_bind_text(stmt, 2, mac, -1, Self.sqliteTransient)
         sqlite3_bind_double(stmt, 3, speedMbps)
+        
+        if let pingLatency {
+            sqlite3_bind_double(stmt, 4, pingLatency)
+        } else {
+            sqlite3_bind_null(stmt, 4)
+        }
+        
+        if let signalStrength {
+            sqlite3_bind_int(stmt, 5, Int32(signalStrength))
+        } else {
+            sqlite3_bind_null(stmt, 5)
+        }
+
         let rc = sqlite3_step(stmt)
         if rc != SQLITE_DONE {
             Self.logger.error("Local speed insert failed: \(rc)")

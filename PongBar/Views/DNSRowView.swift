@@ -67,37 +67,14 @@ struct DNSRowView: View {
                         .foregroundStyle(result?.latencyColor ?? .secondary)
                         .contentTransition(.numericText())
                         .animation(.easeInOut(duration: 0.2), value: result?.latency)
+
+                    // Chevron hint
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.quaternary)
                 }
             }
             .buttonStyle(.plain)
-
-            // DNS quick-switch — separate from chart tap
-            Menu {
-                ForEach(DNSPreset.allCases) { preset in
-                    Button {
-                        dnsTask?.cancel()
-                        dnsTask = Task {
-                            let ok = await DNSSwitcherService.applyPreset(preset)
-                            guard !Task.isCancelled else { return }
-                            if ok { currentPreset = preset }
-                        }
-                    } label: {
-                        if currentPreset == preset {
-                            Label(presetLabel(preset), systemImage: "checkmark")
-                        } else {
-                            Text(presetLabel(preset))
-                        }
-                    }
-                }
-            } label: {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.purple)
-                    .frame(width: 20, height: 20)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 12)
@@ -106,13 +83,5 @@ struct DNSRowView: View {
                 .fill(isHovered ? Color.primary.opacity(0.06) : Color.clear)
         )
         .onHover { hovering in isHovered = hovering }
-        .task { currentPreset = await DNSSwitcherService.detectCurrentPreset() }
-    }
-
-    private func presetLabel(_ preset: DNSPreset) -> String {
-        if let servers = preset.servers {
-            return "\(preset.rawValue) (\(servers.first ?? ""))"
-        }
-        return preset.rawValue
     }
 }

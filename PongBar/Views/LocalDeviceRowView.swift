@@ -15,6 +15,7 @@ struct LocalDeviceRowView: View {
     let band: String?
     var showStatusIndicator: Bool = true
     var showDisclosure: Bool = false
+    var isCurrentDevice: Bool = false
     
     @State private var isHovered = false
 
@@ -39,7 +40,7 @@ struct LocalDeviceRowView: View {
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(device.displayName)
-                    .font(.body)
+                    .font(isCurrentDevice ? .body.weight(.medium) : .body)
                     .foregroundStyle(.primary)
                 HStack(spacing: 6) {
                     Text(result?.detail ?? device.ipAddress)
@@ -56,6 +57,19 @@ struct LocalDeviceRowView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+
+            if device.usePing {
+                Text(pingText)
+                    .font(.system(.body, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(pingColor)
+                    .frame(width: 48, alignment: .trailing)
+            } else {
+                Text("off")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 48, alignment: .trailing)
+            }
 
             Text(signalText)
                 .font(.system(.body, design: .monospaced))
@@ -83,7 +97,7 @@ struct LocalDeviceRowView: View {
         .contentShape(Rectangle())
         .background(
             RoundedRectangle(cornerRadius: 4)
-                .fill(isHovered ? Color.primary.opacity(0.06) : Color.clear)
+                .fill(isCurrentDevice ? Color.accentColor.opacity(isHovered ? 0.2 : 0.1) : (isHovered ? Color.primary.opacity(0.06) : Color.clear))
         )
         .onHover { hovering in
             isHovered = hovering
@@ -98,6 +112,16 @@ struct LocalDeviceRowView: View {
     private var speedColor: Color {
         guard let speedMbps else { return .secondary }
         return speedMbps.localSpeedQualityColor
+    }
+
+    private var pingText: String {
+        guard let result = result else { return "---" }
+        return result.latencyString
+    }
+
+    private var pingColor: Color {
+        guard let result = result, result.isReachable else { return .red }
+        return result.latencyColor
     }
 
     private var signalText: String {

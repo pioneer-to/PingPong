@@ -14,6 +14,8 @@ struct CustomTargetDetailView: View {
     let displayName: String
     var goBack: () -> Void
 
+    @Environment(PopoverState.self) private var popoverState
+
     @State private var selectedRange: TimeRange = .fifteenMin
     @State private var samples: [LatencySample] = []
     @State private var rawStats = LatencyStatsResult(avg: 0, min: 0, max: 0, loss: 0, jitter: 0)
@@ -137,7 +139,7 @@ struct CustomTargetDetailView: View {
             loadSamples()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(Config.chartRefreshInterval))
-                if timeOffset == 0 { loadSamples() }
+                if timeOffset == 0 && popoverState.isVisible { loadSamples() }
             }
         }
         .onChange(of: selectedRange) { _, _ in

@@ -70,6 +70,8 @@ struct TargetDetailView: View {
     var goBack: () -> Void
     var navigate: ((PopoverPage) -> Void)?
 
+    @Environment(PopoverState.self) private var popoverState
+
     @State private var selectedRange: TimeRange = .fifteenMin
     @State private var samples: [LatencySample] = []      // downsampled for chart rendering
     @State private var rawStats = LatencyStatsResult(avg: 0, min: 0, max: 0, loss: 0, jitter: 0)
@@ -103,7 +105,7 @@ struct TargetDetailView: View {
                     ? Config.chartRefreshInterval
                     : 30.0  // Slow refresh for long ranges
                 try? await Task.sleep(for: .seconds(interval))
-                if timeOffset == 0 {
+                if timeOffset == 0 && popoverState.isVisible {
                     loadSamples()
                 }
             }

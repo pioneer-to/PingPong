@@ -7,6 +7,8 @@ public struct TR064Host: Codable {
     public let active: Bool
     public let name: String?
     public let speedMbps: Double?
+    public let band: String?
+    public let signalStrengthPercent: Int?
 }
 
 public struct TR064HostDebugAttributes {
@@ -31,7 +33,7 @@ public struct TR064WiFiAssociationInfo {
 public enum TR064HostService {
     private static let logger = Logger(subsystem: "de.mice.fritzbox.tr064", category: "TR064HostService")
     private static let fixedRouterHost = "192.168.178.1"
-    private static let tr064DebugLoggingEnabled = false
+    private static let tr064DebugLoggingEnabled = true
     private static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
@@ -44,7 +46,7 @@ public enum TR064HostService {
         guard tr064DebugLoggingEnabled else {
             return
         }
-        // print(message())
+        print(message())
     }
 
     /// Fetch host list from Fritz!Box router using TR-064 Hosts service.
@@ -244,14 +246,21 @@ public enum TR064HostService {
             let decoded = try JSONDecoder().decode(DataLuaResponse.self, from: data)
             let devices = decoded.data?.active ?? []
             tr064DebugLog("[TR064] parseHostsFromDataLua: decoded \(devices.count) active devices")
+            
             return devices.compactMap { device in
                 guard let mac = device.mac, !mac.isEmpty else { return nil }
+                
+                let props = device.properties ?? []
+                let isActive = ["led_green", "globe_online"].contains(device.state?.className) || device.state?.fos_icon?.icon == "globe_online"
+                
                 return TR064Host(
                     mac: mac,
                     ip: device.ipv4?.ip,
-                    active: ["led_green", "globe_online"].contains(device.state?.className),
+                    active: isActive,
                     name: device.name ?? "Unknown",
-                    speedMbps: parseDownstreamMbps(from: device.properties ?? [])
+                    speedMbps: parseDownstreamMbps(from: props),
+                    band: parseBand(from: props),
+                    signalStrengthPercent: nil
                 )
             }
         } catch {
@@ -260,9 +269,19 @@ public enum TR064HostService {
         }
     }
 
+    private static func parseBand(from properties: [DataLuaProperty]) -> String? {
+        for prop in properties {
+            guard let text = prop.txt else { continue }
+            if text.contains("6 GHz") { return "6GHz" }
+            if text.contains("5 GHz") { return "5GHz" }
+            if text.contains("2,4 GHz") || text.contains("2.4 GHz") { return "2.4GHz" }
+        }
+        return nil
+    }
+
     /// Returns dictionary keyed by lowercased mac addresses (colon-separated if present)
-    /// with active status and optional IP address.
-    public static func onlineMap(routerIP: String, username: String, password: String) async -> [String: (active: Bool, ip: String?)] {
+    /// with full TR064Host instances.
+    public static func onlineMap(routerIP: String, username: String, password: String) async -> [String: TR064Host] {
         // Prefer the same TR-064 client flow used by the device picker because it
         // handles Fritz!Box auth challenges more robustly.
         if let pickerMap = await onlineMapViaFritzService(routerIP: routerIP, username: username, password: password) {
@@ -272,10 +291,10 @@ public enum TR064HostService {
         guard let hosts = await fetchHosts(routerIP: routerIP, username: username, password: password) else {
             return [:]
         }
-        var map = [String: (active: Bool, ip: String?)]()
+        var map = [String: TR064Host]()
         for host in hosts {
             let key = normalizeMACToKey(host.mac)
-            map[key] = (active: host.active, ip: host.ip)
+            map[key] = host
         }
         return map
     }
@@ -462,17 +481,17 @@ public enum TR064HostService {
         routerIP: String,
         username: String,
         password: String
-    ) async -> (map: [String: (active: Bool, ip: String?)], error: String?) {
+    ) async -> (map: [String: TR064Host], error: String?) {
         do {
             let service = FritzBoxTR064Service()
-            let devices = try await service.fetchConnectedDevices(
+            let hosts = try await service.fetchConnectedTR064Hosts(
                 routerIP: routerIP,
                 username: username,
                 password: password
             )
-            var map = [String: (active: Bool, ip: String?)]()
-            for device in devices {
-                map[normalizeMACToKey(device.macAddress)] = (active: true, ip: device.ipAddress)
+            var map = [String: TR064Host]()
+            for host in hosts {
+                map[normalizeMACToKey(host.mac)] = host
             }
             return (map, nil)
         } catch {
@@ -486,7 +505,11 @@ public enum TR064HostService {
                 useHTTPS: false
             )
             if let hosts = httpResult.hosts {
-                return (buildMap(from: hosts), nil)
+                var map = [String: TR064Host]()
+                for host in hosts {
+                    map[normalizeMACToKey(host.mac)] = host
+                }
+                return (map, nil)
             }
 
             let httpError = httpResult.error ?? "unknown HTTP error"
@@ -498,17 +521,17 @@ public enum TR064HostService {
         routerIP: String,
         username: String,
         password: String
-    ) async -> [String: (active: Bool, ip: String?)]? {
+    ) async -> [String: TR064Host]? {
         do {
             let service = FritzBoxTR064Service()
-            let devices = try await service.fetchConnectedDevices(
+            let hosts = try await service.fetchConnectedTR064Hosts(
                 routerIP: routerIP,
                 username: username,
                 password: password
             )
-            var map = [String: (active: Bool, ip: String?)]()
-            for device in devices {
-                map[normalizeMACToKey(device.macAddress)] = (active: true, ip: device.ipAddress)
+            var map = [String: TR064Host]()
+            for host in hosts {
+                map[normalizeMACToKey(host.mac)] = host
             }
             return map
         } catch {
@@ -951,7 +974,9 @@ public enum TR064HostService {
                     ip: ip?.isEmpty == true ? nil : ip,
                     active: isActive,
                     name: hostName?.isEmpty == true ? nil : hostName,
-                    speedMbps: parseSpeedMbps(from: entryXML)
+                    speedMbps: parseSpeedMbps(from: entryXML),
+                    band: nil,
+                    signalStrengthPercent: nil
                 )
             )
         }
@@ -1484,11 +1509,11 @@ private actor TR064HostFetchCoordinator {
     }
 }
 
-private struct DataLuaResponse: Decodable {
+private struct DataLuaResponse: Codable {
     let data: DataLuaPayload?
 }
 
-private struct DataLuaPayload: Decodable {
+private struct DataLuaPayload: Codable {
     let active: [DataLuaDevice]?
     let fbox: [DataLuaDevice]?
     let fboxOther: [DataLuaDevice]?
@@ -1500,7 +1525,7 @@ private struct DataLuaPayload: Decodable {
     }
 }
 
-private struct DataLuaDevice: Decodable {
+private struct DataLuaDevice: Codable {
     let mac: String?
     let name: String?
     let type: String?
@@ -1524,15 +1549,21 @@ private struct DataLuaDevice: Decodable {
     }
 }
 
-private struct DataLuaState: Decodable {
+private struct DataLuaState: Codable {
     let className: String?
+    let fos_icon: DataLuaFosIcon?
 
     enum CodingKeys: String, CodingKey {
         case className = "class"
+        case fos_icon
     }
 }
 
-private struct DataLuaIPv4: Decodable {
+private struct DataLuaFosIcon: Codable {
+    let icon: String?
+}
+
+private struct DataLuaIPv4: Codable {
     let ip: String?
     let addrtype: String?
     let dhcp: String?
@@ -1548,7 +1579,7 @@ private struct DataLuaIPv4: Decodable {
     }
 }
 
-private struct DataLuaProperty: Decodable {
+private struct DataLuaProperty: Codable {
     let txt: String?
     let onclick: String?
     let icon: String?
