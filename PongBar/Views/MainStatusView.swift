@@ -17,6 +17,12 @@ struct MainStatusView: View {
     @State private var isResolvingTraceTarget = false
     @State private var isEditingTraceTarget = false
     @FocusState private var isTraceTargetFieldFocused: Bool
+    @State private var dectRingCandidate: DECTDevice?
+    @State private var dectRingProcessDevice: DECTDevice?
+    @State private var isShowingDECTRingProcess = false
+    @State private var isDECTRingRunning = false
+    @State private var dectRingLogOutput = ""
+    @State private var dectRingTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -112,6 +118,7 @@ struct MainStatusView: View {
                             let currentDeviceIP = monitor.interfaceInfo?.ipAddress?.trimmingCharacters(in: .whitespacesAndNewlines)
                             let deviceIP = (monitor.localResults[device.id]?.detail ?? device.ipAddress).trimmingCharacters(in: .whitespacesAndNewlines)
                             let isCurrentDevice = currentDeviceIP != nil && !deviceIP.isEmpty && currentDeviceIP == deviceIP
+                            let hasKnownIP = !deviceIP.isEmpty
                             Button {
                                 navigate(.localDeviceSpeedDetail(device))
                             } label: {
@@ -120,13 +127,34 @@ struct MainStatusView: View {
                                     result: monitor.localResults[device.id],
                                     speedMbps: monitor.localSpeeds[device.id],
                                     signalStrengthPercent: monitor.localSignalStrengths[device.id],
-                                    band: monitor.localBands[device.id],
+                                    activeBand: monitor.localBands[device.id],
+                                    supportedBands: device.supportedBands,
                                     showStatusIndicator: !isCurrentDevice,
                                     showDisclosure: true,
-                                    isCurrentDevice: isCurrentDevice
+                                    isCurrentDevice: isCurrentDevice,
+                                    isWANBlocked: monitor.isLocalDeviceWANBlocked(device)
                                 )
                             }
                             .buttonStyle(.plain)
+                            .contextMenu {
+                                if !isCurrentDevice {
+                                    if monitor.isLocalDeviceWANBlocked(device) {
+                                        Button("Enable Wifi access") {
+                                            Task {
+                                                await monitor.setLocalDeviceWANAccess(device, blocked: false)
+                                            }
+                                        }
+                                        .disabled(!hasKnownIP)
+                                    } else {
+                                        Button("Disable Wifi access") {
+                                            Task {
+                                                await monitor.setLocalDeviceWANAccess(device, blocked: true)
+                                            }
+                                        }
+                                        .disabled(!hasKnownIP)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -135,55 +163,77 @@ struct MainStatusView: View {
             }
 
             // DECT Devices
-            if !monitor.dectDevices.isEmpty {
-                Divider()
-                    .padding(.vertical, 4)
+            Divider()
+                .padding(.vertical, 4)
 
+            HStack(spacing: 8) {
+                Text("")
+                    .frame(width: 14)
+                Text("")
+                    .frame(width: 20)
+                Text("DECT Device")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Numbers")
+                    .frame(width: 180, alignment: .trailing)
+                Text("")
+                    .frame(width: 12)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 2)
+
+            if monitor.dectDevices.isEmpty {
                 HStack(spacing: 8) {
                     Text("")
                         .frame(width: 14)
                     Text("")
                         .frame(width: 20)
-                    Text("DECT Device")
+                    Text("No DECT devices found")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Text("Model")
-                        .frame(width: 100, alignment: .trailing)
+                    Text("")
+                        .frame(width: 180)
                     Text("")
                         .frame(width: 12)
                 }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
                 .padding(.horizontal, 12)
-                .padding(.bottom, 2)
-                
+                .padding(.vertical, 4)
+            } else {
                 ForEach(monitor.dectDevices) { device in
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(device.active ? Color.green : Color.red)
-                            .frame(width: 8, height: 8)
-                            .frame(width: 14)
-                        
-                        Image(systemName: "candybarphone")
-                            .frame(width: 20)
-                            .foregroundStyle(.secondary)
-                        
-                        Text(device.name)
-                            .font(.body)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        
-                        Text(device.model ?? "Unknown")
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .frame(width: 100, alignment: .trailing)
-                        
-                        Text("")
-                            .frame(width: 12)
+                    Button {
+                        dectRingCandidate = device
+                    } label: {
+                        HStack(spacing: 8) {
+                            DECTStatusIndicatorView(device: device)
+                                .frame(width: 14)
+
+                            Image(systemName: device.isInCall ? "waveform.and.mic" : "candybarphone")
+                                .frame(width: 20)
+                                .foregroundStyle(device.isInCall ? Color.yellow : Color.secondary)
+
+                            Text(device.name)
+                                .font(.body)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                            Text(numberSummary(for: device))
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(width: 180, alignment: .trailing)
+
+                            Text("")
+                                .frame(width: 12)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
+                    .buttonStyle(.plain)
                 }
             }
 
@@ -251,6 +301,31 @@ struct MainStatusView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 }
             }
+
+            if isShowingDECTRingProcess {
+                ZStack {
+                    Color.black.opacity(0.2)
+                        .ignoresSafeArea()
+
+                    DECTRingProcessSheetView(
+                        isRunning: isDECTRingRunning,
+                        output: dectRingLogOutput,
+                        onCancel: {
+                            Task { await cancelDECTRingProcess() }
+                        },
+                        onOK: {
+                            isShowingDECTRingProcess = false
+                            dectRingProcessDevice = nil
+                            dectRingLogOutput = ""
+                        },
+                        onRetry: {
+                            Task { await retryDECTRingProcess() }
+                        }
+                    )
+                    .padding(12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                }
+            }
         }
         .onAppear {
             isTraceTargetFieldFocused = false
@@ -260,12 +335,95 @@ struct MainStatusView: View {
             isShowingTR064Debug = false
             isTraceTargetFieldFocused = false
             isEditingTraceTarget = false
+            dectRingTask?.cancel()
+            dectRingTask = nil
+            isDECTRingRunning = false
         }
         .onChange(of: isTraceTargetFieldFocused) { _, focused in
             if !focused && isEditingTraceTarget {
                 isEditingTraceTarget = false
             }
         }
+        .alert(
+            "Find/ring phone?",
+            isPresented: Binding(
+                get: { dectRingCandidate != nil },
+                set: { if !$0 { dectRingCandidate = nil } }
+            ),
+            presenting: dectRingCandidate
+        ) { device in
+            Button("Cancel", role: .cancel) {
+                dectRingCandidate = nil
+            }
+            Button("Ring") {
+                beginDECTRingProcess(for: device)
+            }
+        } message: { device in
+            Text("Trigger ringing for \(device.name)?")
+        }
+    }
+
+    private func numberSummary(for device: DECTDevice) -> String {
+        let internalNumber = device.internalNumber ?? "---"
+        let externalNumber = device.externalNumber ?? "---"
+        return "\(internalNumber) / \(externalNumber)"
+    }
+
+    @MainActor
+    private func appendDECTRingLog(_ line: String) {
+        if !dectRingLogOutput.isEmpty {
+            dectRingLogOutput += "\n"
+        }
+        dectRingLogOutput += line
+    }
+
+    private func beginDECTRingProcess(for device: DECTDevice) {
+        dectRingCandidate = nil
+        dectRingProcessDevice = device
+        isShowingDECTRingProcess = true
+        dectRingLogOutput = ""
+        startDECTRingTask(for: device)
+    }
+
+    private func startDECTRingTask(for device: DECTDevice) {
+        guard !isDECTRingRunning else { return }
+        isDECTRingRunning = true
+        appendDECTRingLog("[START] DECT ring process")
+
+        let task = Task {
+            do {
+                try await monitor.ringDECTDevice(device) { line in
+                    appendDECTRingLog(line)
+                }
+                appendDECTRingLog("[DONE] Ring process completed.")
+            } catch is CancellationError {
+                appendDECTRingLog("[CANCELLED] Process cancelled.")
+            } catch {
+                appendDECTRingLog("[ERROR] \(error.localizedDescription)")
+            }
+            await MainActor.run {
+                isDECTRingRunning = false
+                dectRingTask = nil
+            }
+        }
+
+        dectRingTask = task
+    }
+
+    private func cancelDECTRingProcess() async {
+        if isDECTRingRunning {
+            appendDECTRingLog("[ACTION] Cancel requested...")
+            dectRingTask?.cancel()
+        }
+        await monitor.hangupDECTCall { line in
+            appendDECTRingLog(line)
+        }
+    }
+
+    private func retryDECTRingProcess() async {
+        guard !isDECTRingRunning, let device = dectRingProcessDevice else { return }
+        appendDECTRingLog("[RETRY] Re-initiating ring process...")
+        startDECTRingTask(for: device)
     }
 
     private var headerRow: some View {
@@ -767,6 +925,91 @@ private struct TR064DebugSheetView: View {
         .background(.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .shadow(radius: 14)
+    }
+}
+
+private struct DECTRingProcessSheetView: View {
+    let isRunning: Bool
+    let output: String
+    let onCancel: () -> Void
+    let onOK: () -> Void
+    let onRetry: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Ring Phone")
+                    .font(.headline)
+                Spacer()
+                if isRunning {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            ScrollView {
+                Text(output)
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding(10)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(0.04))
+            )
+
+            HStack {
+                Button("Cancel") {
+                    onCancel()
+                }
+                Spacer()
+                Button("Retry") {
+                    onRetry()
+                }
+                .disabled(isRunning)
+                Button("OK") {
+                    onOK()
+                }
+                .disabled(isRunning)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: 700, maxHeight: 420)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .shadow(radius: 14)
+    }
+}
+
+private struct DECTStatusIndicatorView: View {
+    let device: DECTDevice
+    @State private var isPulsing = false
+
+    var body: some View {
+        Group {
+            if device.isInCall {
+                Image(systemName: "waveform.and.mic")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.yellow)
+                    .scaleEffect(isPulsing ? 1.15 : 0.9)
+                    .opacity(isPulsing ? 1.0 : 0.65)
+                    .onAppear {
+                        withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                            isPulsing = true
+                        }
+                    }
+            } else {
+                Circle()
+                    .fill(device.active ? Color.green : Color.red)
+                    .frame(width: 8, height: 8)
+            }
+        }
+        .frame(width: 14, height: 14)
     }
 }
 

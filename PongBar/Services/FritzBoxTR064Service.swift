@@ -34,6 +34,51 @@ final class FritzBoxTR064Service {
         try await fetchConnectedDevicesUnlocked(routerIP: routerIP, username: username, password: password)
     }
 
+    /// Sets WAN access allowance for a host by IPv4 address using AVM HostFilter service.
+    /// `disallow = true` blocks internet access for the host, `false` allows it.
+    nonisolated func setWANAccessByIP(
+        routerIP: String,
+        username: String,
+        password: String,
+        ipAddress: String,
+        disallow: Bool
+    ) async throws {
+        let sanitizedUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sanitizedPassword = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sanitizedIP = ipAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sanitizedUsername.isEmpty, !sanitizedPassword.isEmpty else {
+            throw FritzBoxError.missingCredentials
+        }
+        guard !sanitizedIP.isEmpty else {
+            throw FritzBoxError.xmlParsingError
+        }
+
+        let host = normalizedRouterHost(from: routerIP)
+        do {
+            _ = try await FritzDigestAuth.sendSOAP(
+                routerHost: host,
+                controlPath: "/upnp/control/x_hostfilter",
+                serviceURN: "urn:dslforum-org:service:X_AVM-DE_HostFilter:1",
+                action: "DisallowWANAccessByIP",
+                bodyArgs: "<NewIPv4Address>\(xmlEscaped(sanitizedIP))</NewIPv4Address><NewDisallow>\(disallow ? "1" : "0")</NewDisallow>",
+                username: sanitizedUsername,
+                password: sanitizedPassword,
+                timeout: 8
+            )
+        } catch let error as FritzBoxError {
+            throw error
+        } catch let error as FritzDigestAuthError {
+            switch error {
+            case .httpStatus(401, _), .missingDigestChallenge:
+                throw FritzBoxError.authenticationFailed
+            default:
+                throw FritzBoxError.networkError(error)
+            }
+        } catch {
+            throw FritzBoxError.networkError(error)
+        }
+    }
+
     /// Fetches connection speed values (Mbit/s) per host MAC using GetGenericHostEntry.
     /// Returns a dictionary keyed by normalized lowercased MAC addresses.
     nonisolated func fetchHostSpeeds(routerIP: String, username: String, password: String) async throws -> [String: Double] {
@@ -284,6 +329,15 @@ final class FritzBoxTR064Service {
             result.append(ch)
         }
         return result.lowercased()
+    }
+
+    nonisolated private func xmlEscaped(_ raw: String) -> String {
+        raw
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
     }
 
     nonisolated private func normalizedRouterHost(from routerIP: String) -> String {

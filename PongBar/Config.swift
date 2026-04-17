@@ -348,6 +348,7 @@ extension Config {
         static let fritzUsername = "fritzUsername"
         static let fritzPassword = "fritzPassword"
         static let localNetworkDevices = "localNetworkDevices"
+        static let localDeviceWANBlockStates = "localDeviceWANBlockStates"
     }
 }
 

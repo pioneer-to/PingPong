@@ -11,6 +11,9 @@ public struct DECTDevice: Identifiable, Codable, Equatable, Hashable {
     public var id: String
     public var name: String
     public var active: Bool
+    public var isInCall: Bool
+    public var internalNumber: String?
+    public var externalNumber: String?
     public var manufacturer: String?
     public var model: String?
     public var firmwareVersion: String?

@@ -63,6 +63,7 @@ final class NetworkMonitor {
     var localSpeeds: [UUID: Double] = [:]
     var localSignalStrengths: [UUID: Int] = [:]
     var localBands: [UUID: String] = [:]
+    var localWANBlockedByMAC: [String: Bool] = [:]
     var dectDevices: [DECTDevice] = []
 
     // MARK: - Configuration
@@ -87,6 +88,11 @@ final class NetworkMonitor {
     private var lastInterfaceName: String?
     private var localDeviceRefreshTask: Task<Void, Never>?
     private var localDeviceTimer: Timer?
+    private var dectCallTimer: Timer?
+    private var isRefreshingDECT = false
+    private var isDECTRingOperationInProgress = false
+
+    private let dectPollOffsetSeconds: TimeInterval = 3
 
     // MARK: - Computed
 
@@ -109,6 +115,7 @@ final class NetworkMonitor {
         self.localDeviceSpeedInterval = Config.localDeviceSpeedInterval
         customTargets = CustomTargetStore.load()
         localDevices = LocalNetworkDeviceStore.load()
+        localWANBlockedByMAC = loadLocalWANBlockedByMAC()
         LocalDeviceSpeedStorage.shared.syncSelectedDevices(localDevices)
         startPathMonitor()
         NotificationService.requestPermission()
@@ -162,7 +169,8 @@ final class NetworkMonitor {
         isRunning = true
         Task { await performChecks() }
         Task { await refreshLocalDeviceSpeeds() }
-        Task { await refreshDECTDevices() }
+        // Startup: refresh DECT with offset and full inventory refresh.
+        scheduleInitialDECTRefresh(forceInventoryRefresh: true)
         // Create timer without auto-scheduling, add only to .common mode
         // so it fires exactly once per interval even during scroll/tracking events.
         let t = Timer(timeInterval: pingInterval, repeats: true) { [weak self] _ in
@@ -171,6 +179,7 @@ final class NetworkMonitor {
         RunLoop.current.add(t, forMode: .common)
         timer = t
         startLocalDeviceTimer()
+        startDECTTimer()
     }
 
     func stop() {
@@ -178,25 +187,49 @@ final class NetworkMonitor {
         timer = nil
         localDeviceTimer?.invalidate()
         localDeviceTimer = nil
+        dectCallTimer?.invalidate()
+        dectCallTimer = nil
         isRunning = false
     }
 
     func restartLocalDeviceSpeedMonitoring() {
         localDeviceTimer?.invalidate()
         localDeviceTimer = nil
+        dectCallTimer?.invalidate()
+        dectCallTimer = nil
         guard isRunning else { return }
         startLocalDeviceTimer()
+        startDECTTimer()
         Task { await refreshLocalDeviceSpeeds() }
-        Task { await refreshDECTDevices() }
+        scheduleInitialDECTRefresh(forceInventoryRefresh: false)
     }
 
     private func startLocalDeviceTimer() {
         let t = Timer(timeInterval: localDeviceSpeedInterval, repeats: true) { [weak self] _ in
             Task { [weak self] in await self?.refreshLocalDeviceSpeeds() }
-            Task { [weak self] in await self?.refreshDECTDevices() }
         }
         RunLoop.current.add(t, forMode: .common)
         localDeviceTimer = t
+    }
+
+    private func startDECTTimer() {
+        let t = Timer(timeInterval: localDeviceSpeedInterval, repeats: true) { [weak self] _ in
+            Task { [weak self] in
+                guard let self else { return }
+                try? await Task.sleep(for: .seconds(self.dectPollOffsetSeconds))
+                await self.refreshDECTDevices(forceInventoryRefresh: false)
+            }
+        }
+        RunLoop.current.add(t, forMode: .common)
+        dectCallTimer = t
+    }
+
+    private func scheduleInitialDECTRefresh(forceInventoryRefresh: Bool) {
+        Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: .seconds(self.dectPollOffsetSeconds))
+            await self.refreshDECTDevices(forceInventoryRefresh: forceInventoryRefresh)
+        }
     }
 
     // MARK: - NWPathMonitor
@@ -362,7 +395,12 @@ final class NetworkMonitor {
         }
     }
 
-    private func refreshDECTDevices() async {
+    private func refreshDECTDevices(forceInventoryRefresh: Bool) async {
+        guard !isDECTRingOperationInProgress else { return }
+        guard !isRefreshingDECT else { return }
+        isRefreshingDECT = true
+        defer { isRefreshingDECT = false }
+
         let account = UserDefaults.standard.string(forKey: "local.username")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let password = UserDefaults.standard.string(forKey: "local.password")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !account.isEmpty, !password.isEmpty else { return }
@@ -372,7 +410,8 @@ final class NetworkMonitor {
             let devices = try await FritzBoxDECTService.fetchDECTDevices(
                 routerIP: routerIPGuess,
                 username: account,
-                password: password
+                password: password,
+                forceInventoryRefresh: forceInventoryRefresh
             )
             await MainActor.run {
                 self.dectDevices = devices
@@ -383,6 +422,7 @@ final class NetworkMonitor {
     }
 
     private func refreshLocalDeviceSpeeds() async {
+        guard !isDECTRingOperationInProgress else { return }
         guard !localDevices.isEmpty else { return }
         guard localDeviceRefreshTask == nil else { return }
 
@@ -400,6 +440,13 @@ final class NetworkMonitor {
                 try? await Task.sleep(for: .milliseconds(300))
                 statusMap = await TR064HostService.onlineMap(routerIP: routerIPGuess, username: account, password: password)
             }
+
+            let wifiAssociationMap = await TR064HostService.wifiAssociationMap(
+                routerIP: routerIPGuess,
+                username: account,
+                password: password,
+                macAddresses: devicesSnapshot.map(\.macAddress)
+            )
 
             let pingResults: [UUID: Double?] = await withTaskGroup(of: (UUID, Double?).self) { group in
                 for device in devicesSnapshot {
@@ -464,13 +511,20 @@ final class NetworkMonitor {
                         detail: ip
                     )
 
-                    if let band = state?.band {
-                        self.localBands[device.id] = band
+                    let wifiState = self.localMapEntry(for: device.macAddress, in: wifiAssociationMap)
+                    let normalizedActiveBand = self.normalizedBandLabel(wifiState?.band ?? state?.band)
+                    if let normalizedActiveBand {
+                        self.localBands[device.id] = normalizedActiveBand
+                        if !updatedDevices[index].supportedBands.contains(normalizedActiveBand) {
+                            updatedDevices[index].supportedBands.append(normalizedActiveBand)
+                            updatedDevices[index].supportedBands = self.orderedUniqueBands(updatedDevices[index].supportedBands)
+                            devicesChanged = true
+                        }
                     } else {
                         self.localBands[device.id] = nil
                     }
 
-                    if let sig = state?.signalStrengthPercent {
+                    if let sig = wifiState?.signalStrengthPercent ?? state?.signalStrengthPercent {
                         self.localSignalStrengths[device.id] = sig
                     } else {
                         self.localSignalStrengths[device.id] = nil
@@ -540,6 +594,43 @@ final class NetworkMonitor {
         return map[key1] ?? map[key2] ?? map[key3] ?? map[key4]
     }
 
+    private func normalizeMACKey(_ macAddress: String) -> String {
+        let lower = macAddress.lowercased()
+        return lower.replacingOccurrences(of: "-", with: "").replacingOccurrences(of: ":", with: "")
+    }
+
+    private func loadLocalWANBlockedByMAC() -> [String: Bool] {
+        UserDefaults.standard.dictionary(forKey: Config.Keys.localDeviceWANBlockStates) as? [String: Bool] ?? [:]
+    }
+
+    private func saveLocalWANBlockedByMAC() {
+        UserDefaults.standard.set(localWANBlockedByMAC, forKey: Config.Keys.localDeviceWANBlockStates)
+    }
+
+    private func normalizedBandLabel(_ band: String?) -> String? {
+        guard let raw = band?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        let lower = raw.lowercased()
+        if lower.contains("6") { return "6GHz" }
+        if lower.contains("5") { return "5GHz" }
+        if lower.contains("2.4") || lower.contains("2,4") || lower.contains("24") { return "2.4GHz" }
+        return raw
+    }
+
+    private func orderedUniqueBands(_ bands: [String]) -> [String] {
+        let preferredOrder = ["2.4GHz", "5GHz", "6GHz"]
+        let unique = Array(Set(bands.compactMap { normalizedBandLabel($0) }))
+        return unique.sorted { left, right in
+            let leftIndex = preferredOrder.firstIndex(of: left) ?? Int.max
+            let rightIndex = preferredOrder.firstIndex(of: right) ?? Int.max
+            if leftIndex == rightIndex {
+                return left < right
+            }
+            return leftIndex < rightIndex
+        }
+    }
+
     // MARK: - Custom Target Management
 
     func addCustomTarget(name: String, host: String) {
@@ -566,6 +657,9 @@ final class NetworkMonitor {
     
     func saveLocalDevices(_ devices: [LocalNetworkDevice]) {
         self.localDevices = devices
+        let validMACs = Set(devices.map { normalizeMACKey($0.macAddress) })
+        localWANBlockedByMAC = localWANBlockedByMAC.filter { validMACs.contains($0.key) }
+        saveLocalWANBlockedByMAC()
         LocalDeviceSpeedStorage.shared.syncSelectedDevices(devices)
         let validIDs = Set(devices.map(\.id))
         localResults = localResults.filter { validIDs.contains($0.key) }
@@ -574,6 +668,164 @@ final class NetworkMonitor {
         localBands = localBands.filter { validIDs.contains($0.key) }
         LocalNetworkDeviceStore.save(devices)
         Task { await refreshLocalDeviceSpeeds() }
+    }
+
+    func isLocalDeviceWANBlocked(_ device: LocalNetworkDevice) -> Bool {
+        localWANBlockedByMAC[normalizeMACKey(device.macAddress)] ?? false
+    }
+
+    func setLocalDeviceWANAccess(_ device: LocalNetworkDevice, blocked: Bool) async {
+        let account = UserDefaults.standard.string(forKey: "local.username")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let password = UserDefaults.standard.string(forKey: "local.password")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !account.isEmpty, !password.isEmpty else {
+            print("Set WAN access skipped: missing FRITZ!Box credentials")
+            return
+        }
+
+        let ip = (localResults[device.id]?.detail ?? device.ipAddress).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ip.isEmpty else {
+            print("Set WAN access skipped: missing IP for device \(device.displayName)")
+            return
+        }
+
+        let routerIPGuess = guessedRouterIP(from: gatewayIP)
+        do {
+            try await FritzBoxTR064Service.shared.setWANAccessByIP(
+                routerIP: routerIPGuess,
+                username: account,
+                password: password,
+                ipAddress: ip,
+                disallow: blocked
+            )
+            localWANBlockedByMAC[normalizeMACKey(device.macAddress)] = blocked
+            saveLocalWANBlockedByMAC()
+            print("Set WAN access for \(device.displayName) (\(ip)) -> \(blocked ? "blocked" : "allowed")")
+        } catch {
+            print("Set WAN access failed for \(device.displayName) (\(ip)): \(error.localizedDescription)")
+        }
+    }
+
+    func ringDECTDevice(
+        _ device: DECTDevice,
+        onLog: (@MainActor (String) -> Void)? = nil
+    ) async throws {
+        let (routerIPGuess, primaryAccount, primaryPassword) = try dectCredentials()
+
+        let targetNumber = device.internalNumber ?? FritzBoxDECTService.defaultInternalNumber(forDeviceID: device.id)
+        guard let targetNumber, !targetNumber.isEmpty else {
+            throw NSError(domain: "PongBar.DECT", code: 2, userInfo: [NSLocalizedDescriptionKey: "No internal DECT number available for this phone"])
+        }
+
+        if let onLog {
+            onLog("Using router \(routerIPGuess)")
+            onLog("Target handset: \(device.name) (\(targetNumber))")
+            onLog("Pausing background DECT/local-device polling during ring process...")
+        }
+
+        isDECTRingOperationInProgress = true
+        defer {
+            isDECTRingOperationInProgress = false
+        }
+
+        do {
+            onLog?("Using DECT credentials: \(primaryAccount)")
+            try await FritzBoxDECTService.ringPhone(
+                routerIP: routerIPGuess,
+                username: primaryAccount,
+                password: primaryPassword,
+                internalNumber: targetNumber,
+                preferredHandsetName: device.name,
+                onLog: { line in
+                    Task { @MainActor in
+                        onLog?(line)
+                    }
+                }
+            )
+        } catch {
+            guard shouldRetryWithFallbackCredentials(error),
+                  let (fallbackAccount, fallbackPassword) = dectFallbackCredentials()
+            else {
+                throw error
+            }
+
+            onLog?("Primary DECT credentials rejected (401). Retrying with local FRITZ!Box credentials...")
+            onLog?("Using fallback DECT credentials: \(fallbackAccount)")
+            try await FritzBoxDECTService.ringPhone(
+                routerIP: routerIPGuess,
+                username: fallbackAccount,
+                password: fallbackPassword,
+                internalNumber: targetNumber,
+                preferredHandsetName: device.name,
+                onLog: { line in
+                    Task { @MainActor in
+                        onLog?(line)
+                    }
+                }
+            )
+        }
+    }
+
+    func hangupDECTCall(onLog: (@MainActor (String) -> Void)? = nil) async {
+        do {
+            let (routerIPGuess, account, password) = try dectCredentials()
+            isDECTRingOperationInProgress = true
+            defer { isDECTRingOperationInProgress = false }
+            if let onLog {
+                onLog("Sending manual hangup...")
+            }
+            try await FritzBoxDECTService.hangupCall(
+                routerIP: routerIPGuess,
+                username: account,
+                password: password
+            )
+            if let onLog {
+                onLog("Manual hangup sent.")
+            }
+        } catch {
+            if shouldRetryWithFallbackCredentials(error),
+               let (fallbackAccount, fallbackPassword) = dectFallbackCredentials() {
+                do {
+                    if let onLog {
+                        onLog("Primary DECT credentials rejected (401). Retrying manual hangup with fallback credentials...")
+                    }
+                    let routerIPGuess = guessedRouterIP(from: gatewayIP)
+                    try await FritzBoxDECTService.hangupCall(
+                        routerIP: routerIPGuess,
+                        username: fallbackAccount,
+                        password: fallbackPassword
+                    )
+                    if let onLog {
+                        onLog("Manual hangup sent (fallback credentials).")
+                    }
+                } catch {
+                    if let onLog {
+                        onLog("Manual hangup failed: \(error.localizedDescription)")
+                    }
+                }
+            } else if let onLog {
+                onLog("Manual hangup failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func dectCredentials() throws -> (routerIP: String, username: String, password: String) {
+        // Dedicated telephony credentials (calling use case only).
+        let account = "testing1"
+        let password = "Macbook2015"
+        let routerIPGuess = guessedRouterIP(from: gatewayIP)
+        return (routerIPGuess, account, password)
+    }
+
+    private func dectFallbackCredentials() -> (username: String, password: String)? {
+        let account = UserDefaults.standard.string(forKey: "local.username")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let password = UserDefaults.standard.string(forKey: "local.password")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !account.isEmpty, !password.isEmpty else { return nil }
+        return (account, password)
+    }
+
+    private func shouldRetryWithFallbackCredentials(_ error: Error) -> Bool {
+        let text = error.localizedDescription.lowercased()
+        return text.contains("http 401") || text.contains("401 unauthorized")
     }
 
     func clearHistory() {

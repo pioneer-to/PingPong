@@ -12,10 +12,12 @@ struct LocalDeviceRowView: View {
     let result: PingResult?
     let speedMbps: Double?
     let signalStrengthPercent: Int?
-    let band: String?
+    let activeBand: String?
+    let supportedBands: [String]
     var showStatusIndicator: Bool = true
     var showDisclosure: Bool = false
     var isCurrentDevice: Bool = false
+    var isWANBlocked: Bool = false
     
     @State private var isHovered = false
 
@@ -46,15 +48,26 @@ struct LocalDeviceRowView: View {
                     Text(result?.detail ?? device.ipAddress)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if let band, !band.isEmpty {
-                        Text(band)
+
+                    ForEach(orderedBands, id: \.self) { band in
+                        Text(bandBadgeText(for: band))
                             .font(.caption2)
-                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .foregroundStyle(activeBand == band ? .white : bandBadgeColor(for: band))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 1)
-                            .background(bandBadgeColor, in: Capsule())
+                            .background(
+                                Capsule()
+                                    .fill(activeBand == band ? bandBadgeColor(for: band) : Color.clear)
+                            )
+                            .overlay(
+                                Capsule()
+                                    .stroke(bandBadgeColor(for: band).opacity(activeBand == band ? 0 : 0.6), lineWidth: 1)
+                            )
                     }
                 }
+                .fixedSize(horizontal: true, vertical: false)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -97,11 +110,21 @@ struct LocalDeviceRowView: View {
         .contentShape(Rectangle())
         .background(
             RoundedRectangle(cornerRadius: 4)
-                .fill(isCurrentDevice ? Color.accentColor.opacity(isHovered ? 0.2 : 0.1) : (isHovered ? Color.primary.opacity(0.06) : Color.clear))
+                .fill(rowBackgroundColor)
         )
         .onHover { hovering in
             isHovered = hovering
         }
+    }
+
+    private var rowBackgroundColor: Color {
+        if isWANBlocked {
+            return Color.red.opacity(isHovered ? 0.22 : 0.14)
+        }
+        if isCurrentDevice {
+            return Color.accentColor.opacity(isHovered ? 0.2 : 0.1)
+        }
+        return isHovered ? Color.primary.opacity(0.06) : Color.clear
     }
 
     private var statusColor: Color {
@@ -134,7 +157,13 @@ struct LocalDeviceRowView: View {
         return signalStrengthPercent.signalQualityColor
     }
 
-    private var bandBadgeColor: Color {
+    private var orderedBands: [String] {
+        let preferredOrder = ["2.4GHz", "5GHz", "6GHz"]
+        let normalized = Set(supportedBands.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        return preferredOrder.filter { normalized.contains($0) }
+    }
+
+    private func bandBadgeColor(for band: String) -> Color {
         switch band {
         case "2.4GHz":
             return .teal
@@ -144,6 +173,19 @@ struct LocalDeviceRowView: View {
             return .indigo
         default:
             return .secondary
+        }
+    }
+
+    private func bandBadgeText(for band: String) -> String {
+        switch band {
+        case "2.4GHz":
+            return "2.4"
+        case "5GHz":
+            return "5"
+        case "6GHz":
+            return "6"
+        default:
+            return band.replacingOccurrences(of: "GHz", with: "")
         }
     }
 }

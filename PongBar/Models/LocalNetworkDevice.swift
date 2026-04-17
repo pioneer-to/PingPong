@@ -10,6 +10,20 @@ import Foundation
 
 struct LocalNetworkDevice: Identifiable, Codable, Equatable, Hashable {
     var id: UUID = UUID()
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case macAddress
+        case ipAddress
+        case originalName
+        case customName
+        case symbolName
+        case notifyConnectivityDown
+        case usePing
+        case pingSupported
+        case pingProbeLastCheckedAt
+        case supportedBands
+    }
     
     /// The MAC Address of the device (Primary identifier from TR-064)
     var macAddress: String
@@ -37,6 +51,50 @@ struct LocalNetworkDevice: Identifiable, Codable, Equatable, Hashable {
 
     /// Last time we checked whether this host supports ping.
     var pingProbeLastCheckedAt: Date? = nil
+
+    /// Bands this device has been observed on at least once (e.g. 2.4GHz, 5GHz, 6GHz).
+    var supportedBands: [String] = []
+
+    init(
+        id: UUID = UUID(),
+        macAddress: String,
+        ipAddress: String,
+        originalName: String,
+        customName: String,
+        symbolName: String,
+        notifyConnectivityDown: Bool,
+        usePing: Bool = false,
+        pingSupported: Bool? = nil,
+        pingProbeLastCheckedAt: Date? = nil,
+        supportedBands: [String] = []
+    ) {
+        self.id = id
+        self.macAddress = macAddress
+        self.ipAddress = ipAddress
+        self.originalName = originalName
+        self.customName = customName
+        self.symbolName = symbolName
+        self.notifyConnectivityDown = notifyConnectivityDown
+        self.usePing = usePing
+        self.pingSupported = pingSupported
+        self.pingProbeLastCheckedAt = pingProbeLastCheckedAt
+        self.supportedBands = supportedBands
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        macAddress = try container.decode(String.self, forKey: .macAddress)
+        ipAddress = try container.decode(String.self, forKey: .ipAddress)
+        originalName = try container.decode(String.self, forKey: .originalName)
+        customName = try container.decode(String.self, forKey: .customName)
+        symbolName = try container.decode(String.self, forKey: .symbolName)
+        notifyConnectivityDown = try container.decode(Bool.self, forKey: .notifyConnectivityDown)
+        usePing = try container.decodeIfPresent(Bool.self, forKey: .usePing) ?? false
+        pingSupported = try container.decodeIfPresent(Bool.self, forKey: .pingSupported)
+        pingProbeLastCheckedAt = try container.decodeIfPresent(Date.self, forKey: .pingProbeLastCheckedAt)
+        supportedBands = try container.decodeIfPresent([String].self, forKey: .supportedBands) ?? []
+    }
     
     var displayName: String {
         return customName.isEmpty ? originalName : customName
