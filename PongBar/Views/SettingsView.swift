@@ -67,12 +67,24 @@ struct SettingsView: View {
             advancedTab
                 .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
         }
-        .frame(width: 680, height: 380)
+        .controlSize(.small)
+        .frame(
+            minWidth: 730,
+            idealWidth: 730,
+            maxWidth: 730,
+            minHeight: 560,
+            idealHeight: 620,
+            maxHeight: .infinity,
+            alignment: .top
+        )
         .task {
             await loadSettings()
         }
         .overlay {
-            if isLoadingSettings { ProgressView() }
+            if isLoadingSettings {
+                ProgressView("Loading Settings…")
+                    .padding()
+            }
         }
     }
 

@@ -58,65 +58,30 @@ struct LocalDeviceSpeedDetailView: View {
     }
 
     private var headerSection: some View {
-        HStack(spacing: 8) {
-            Button {
-                goBack()
-            } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "chevron.left")
-                        .font(.caption)
-                    Text("Back")
-                        .font(.body)
-                }
-                .foregroundStyle(.secondary)
+        PopoverNavigationHeader(onBack: goBack) {
+            HStack(spacing: 8) {
+                Image(systemName: device.symbolName)
+                    .foregroundStyle(.primary)
+                Text(device.displayName)
+                    .font(.headline)
             }
-            .buttonStyle(.plain)
-
-            Spacer()
-
-            Image(systemName: device.symbolName)
-                .foregroundStyle(.primary)
-            Text(device.displayName)
-                .font(.headline)
-
-            Spacer()
-
-            HStack(spacing: 2) {
-                Button {
+        } trailing: {
+            PopoverTimeNavigationControls(
+                timeOffset: timeOffset,
+                onStepBack: {
                     timeOffset = max(timeOffset - selectedRange.seconds * 0.5, -Config.retentionPeriod)
                     loadSamples()
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.caption2)
-                        .frame(width: 16, height: 16)
-                }
-                .buttonStyle(.plain)
-
-                Button {
+                },
+                onReset: {
                     timeOffset = 0
                     loadSamples()
-                } label: {
-                    Text("Now")
-                        .font(.caption2)
-                        .foregroundStyle(timeOffset == 0 ? .quaternary : .primary)
-                }
-                .buttonStyle(.plain)
-                .disabled(timeOffset == 0)
-
-                Button {
+                },
+                onStepForward: {
                     timeOffset = min(0, timeOffset + selectedRange.seconds * 0.5)
                     loadSamples()
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
-                        .frame(width: 16, height: 16)
                 }
-                .buttonStyle(.plain)
-                .disabled(timeOffset >= 0)
-            }
+            )
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
     }
 
     private var chartSection: some View {

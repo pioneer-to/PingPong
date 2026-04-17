@@ -119,68 +119,32 @@ struct TargetDetailView: View {
     // MARK: - Header
 
     private var headerSection: some View {
-        HStack(spacing: 8) {
-            Button {
-                goBack()
-            } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "chevron.left")
-                        .font(.caption)
-                    Text("Back")
-                        .font(.body)
-                }
-                .foregroundStyle(.secondary)
+        PopoverNavigationHeader(onBack: goBack) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(currentStatusColor)
+                    .frame(width: 8, height: 8)
+
+                Text(target.displayName)
+                    .font(.headline)
             }
-            .buttonStyle(.plain)
-
-            Spacer()
-
-            Circle()
-                .fill(currentStatusColor)
-                .frame(width: 8, height: 8)
-
-            Text(target.displayName)
-                .font(.headline)
-
-            Spacer()
-
-            // Time navigation arrows
-            HStack(spacing: 2) {
-                Button {
+        } trailing: {
+            PopoverTimeNavigationControls(
+                timeOffset: timeOffset,
+                onStepBack: {
                     timeOffset = max(timeOffset - selectedRange.seconds * 0.5, -Config.retentionPeriod)
                     loadSamples()
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.caption2)
-                        .frame(width: 16, height: 16)
-                }
-                .buttonStyle(.plain)
-
-                Button {
+                },
+                onReset: {
                     timeOffset = 0
                     loadSamples()
-                } label: {
-                    Text("Now")
-                        .font(.caption2)
-                        .foregroundStyle(timeOffset == 0 ? .quaternary : .primary)
-                }
-                .buttonStyle(.plain)
-                .disabled(timeOffset == 0)
-
-                Button {
+                },
+                onStepForward: {
                     timeOffset = min(0, timeOffset + selectedRange.seconds * 0.5)
                     loadSamples()
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
-                        .frame(width: 16, height: 16)
                 }
-                .buttonStyle(.plain)
-                .disabled(timeOffset >= 0)
-            }
+            )
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
     }
 
     // MARK: - Range Picker

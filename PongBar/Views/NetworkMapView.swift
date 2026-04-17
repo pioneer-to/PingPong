@@ -17,37 +17,19 @@ struct NetworkMapView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack(spacing: 8) {
-                Button {
-                    session?.stop()
-                    goBack()
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "chevron.left")
-                            .font(.caption)
-                        Text("Back")
-                            .font(.body)
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
+            PopoverNavigationHeader(onBack: {
+                session?.stop()
+                goBack()
+            }) {
                 Text("Network Map")
                     .font(.headline)
-
-                Spacer()
-
+            } trailing: {
                 if let session, session.isRunning {
                     Circle()
                         .fill(.green)
                         .frame(width: 6, height: 6)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
 
             Divider()
 

@@ -25,41 +25,26 @@ struct CustomTargetDetailView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack(spacing: 8) {
-                Button {
-                    goBack()
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "chevron.left").font(.caption)
-                        Text("Back").font(.body)
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
+            PopoverNavigationHeader(onBack: goBack) {
                 Text(displayName)
                     .font(.headline)
-
-                Spacer()
-
-                // Time navigation
-                HStack(spacing: 2) {
-                    Button { timeOffset = max(timeOffset - selectedRange.seconds * 0.5, -Config.retentionPeriod); loadSamples() } label: {
-                        Image(systemName: "chevron.left").font(.caption2).frame(width: 16, height: 16)
-                    }.buttonStyle(.plain)
-                    Button { timeOffset = 0; loadSamples() } label: {
-                        Text("Now").font(.caption2).foregroundStyle(timeOffset == 0 ? .quaternary : .primary)
-                    }.buttonStyle(.plain).disabled(timeOffset == 0)
-                    Button { timeOffset = min(0, timeOffset + selectedRange.seconds * 0.5); loadSamples() } label: {
-                        Image(systemName: "chevron.right").font(.caption2).frame(width: 16, height: 16)
-                    }.buttonStyle(.plain).disabled(timeOffset >= 0)
-                }
+            } trailing: {
+                PopoverTimeNavigationControls(
+                    timeOffset: timeOffset,
+                    onStepBack: {
+                        timeOffset = max(timeOffset - selectedRange.seconds * 0.5, -Config.retentionPeriod)
+                        loadSamples()
+                    },
+                    onReset: {
+                        timeOffset = 0
+                        loadSamples()
+                    },
+                    onStepForward: {
+                        timeOffset = min(0, timeOffset + selectedRange.seconds * 0.5)
+                        loadSamples()
+                    }
+                )
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
 
             Divider()
 

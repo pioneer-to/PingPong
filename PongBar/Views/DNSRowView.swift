@@ -25,62 +25,57 @@ struct DNSRowView: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            // Clickable area → opens chart detail
-            Button {
-                onTap()
-            } label: {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(statusColor)
-                        .frame(width: 8, height: 8)
+        Button(action: onTap) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 8, height: 8)
 
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("DNS Resolve")
-                            .font(.body)
-                            .foregroundStyle(.primary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("DNS Resolve")
+                        .font(.body)
+                        .foregroundStyle(.primary)
 
-                        HStack(spacing: 6) {
-                            Text(detail)
-                                .foregroundStyle(.secondary)
-                            if let jitterValue, jitterValue >= Config.jitterDisplayThreshold {
-                                Text(String(format: "jit %.1fms", jitterValue))
-                                    .foregroundStyle(jitterValue > Config.jitterWarningThreshold ? .yellow : .secondary)
-                            }
-                            if let loss, loss > 0 {
-                                Text(String(format: "%.0f%% loss", loss))
-                                    .foregroundStyle(.red.opacity(0.8))
-                            }
+                    HStack(spacing: 6) {
+                        Text(detail)
+                            .foregroundStyle(.secondary)
+                        if let jitterValue, jitterValue >= Config.jitterDisplayThreshold {
+                            Text(String(format: "jit %.1fms", jitterValue))
+                                .foregroundStyle(jitterValue > Config.jitterWarningThreshold ? .yellow : .secondary)
                         }
-                        .font(.caption)
+                        if let loss, loss > 0 {
+                            Text(String(format: "%.0f%% loss", loss))
+                                .foregroundStyle(.red.opacity(0.8))
+                        }
                     }
-
-                    Spacer()
-
-                    if sparklineData.compactMap({ $0 }).count >= 2 {
-                        SparklineView(values: sparklineData, color: .purple)
-                    }
-
-                    Text(result?.latencyString ?? "---")
-                        .font(.system(.body, design: .monospaced))
-                        .monospacedDigit()
-                        .foregroundStyle(result?.latencyColor ?? .secondary)
-                        .contentTransition(.numericText())
-                        .animation(.easeInOut(duration: 0.2), value: result?.latency)
-
-                    // Chevron hint
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.quaternary)
+                    .font(.caption)
                 }
+
+                Spacer()
+
+                if sparklineData.compactMap({ $0 }).count >= 2 {
+                    SparklineView(values: sparklineData, color: .purple)
+                }
+
+                Text(result?.latencyString ?? "---")
+                    .font(.system(.body, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(result?.latencyColor ?? .secondary)
+                    .contentTransition(.numericText())
+                    .animation(.easeInOut(duration: 0.2), value: result?.latency)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption2)
+                    .foregroundStyle(.quaternary)
             }
-            .buttonStyle(.plain)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 12)
+        .buttonStyle(.plain)
         .background(
-            RoundedRectangle(cornerRadius: 4)
-                .fill(isHovered ? Color.primary.opacity(0.06) : Color.clear)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isHovered ? Color.primary.opacity(0.05) : Color.clear)
         )
         .onHover { hovering in isHovered = hovering }
     }

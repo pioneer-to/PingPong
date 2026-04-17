@@ -109,7 +109,7 @@ struct LocalDeviceRowView: View {
         .padding(.horizontal, 12)
         .contentShape(Rectangle())
         .background(
-            RoundedRectangle(cornerRadius: 4)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(rowBackgroundColor)
         )
         .onHover { hovering in
@@ -119,12 +119,12 @@ struct LocalDeviceRowView: View {
 
     private var rowBackgroundColor: Color {
         if isWANBlocked {
-            return Color.red.opacity(isHovered ? 0.22 : 0.14)
+            return Color.red.opacity(isHovered ? 0.16 : 0.09)
         }
         if isCurrentDevice {
-            return Color.accentColor.opacity(isHovered ? 0.2 : 0.1)
+            return Color.accentColor.opacity(isHovered ? 0.13 : 0.08)
         }
-        return isHovered ? Color.primary.opacity(0.06) : Color.clear
+        return isHovered ? Color.primary.opacity(0.05) : Color.clear
     }
 
     private var statusColor: Color {

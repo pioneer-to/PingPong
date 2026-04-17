@@ -13,39 +13,10 @@ struct IncidentHistoryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Navigation header
-            HStack {
-                Button {
-                    goBack()
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                            .font(.caption)
-                        Text("Back")
-                            .font(.body)
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
+            PopoverNavigationHeader(onBack: goBack) {
                 Text("Incident History")
                     .font(.headline)
-
-                Spacer()
-
-                // Invisible spacer to balance the Back button
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.left")
-                        .font(.caption)
-                    Text("Back")
-                        .font(.body)
-                }
-                .opacity(0)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
 
             Divider()
 

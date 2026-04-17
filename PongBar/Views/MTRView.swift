@@ -16,29 +16,13 @@ struct MTRView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack(spacing: 8) {
-                Button {
-                    session?.stop()
-                    goBack()
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "chevron.left")
-                            .font(.caption)
-                        Text("Back")
-                            .font(.body)
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
+            PopoverNavigationHeader(onBack: {
+                session?.stop()
+                goBack()
+            }) {
                 Text("MTR")
                     .font(.headline)
-
-                Spacer()
-
+            } trailing: {
                 if let session, session.isRunning {
                     HStack(spacing: 4) {
                         Circle()
@@ -51,8 +35,6 @@ struct MTRView: View {
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
 
             Divider()
 

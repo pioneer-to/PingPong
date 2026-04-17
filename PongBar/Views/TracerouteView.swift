@@ -16,28 +16,10 @@ struct TracerouteView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack(spacing: 8) {
-                Button {
-                    goBack()
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "chevron.left")
-                            .font(.caption)
-                        Text("Back")
-                            .font(.body)
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-
+            PopoverNavigationHeader(onBack: goBack) {
                 Text("Traceroute")
                     .font(.headline)
-
-                Spacer()
-
+            } trailing: {
                 if isRunning {
                     ProgressView()
                         .controlSize(.small)
@@ -52,8 +34,6 @@ struct TracerouteView: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
 
             Divider()
 

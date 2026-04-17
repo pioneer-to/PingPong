@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct MainStatusView: View {
     @Environment(NetworkMonitor.self) private var monitor
@@ -15,7 +16,6 @@ struct MainStatusView: View {
     @State private var tr064DebugOutput = ""
     @AppStorage("networkMap.traceTargetInput") private var traceTargetInput = ""
     @State private var isResolvingTraceTarget = false
-    @State private var isEditingTraceTarget = false
     @FocusState private var isTraceTargetFieldFocused: Bool
     @State private var dectRingCandidate: DECTDevice?
     @State private var dectRingProcessDevice: DECTDevice?
@@ -23,6 +23,7 @@ struct MainStatusView: View {
     @State private var isDECTRingRunning = false
     @State private var dectRingLogOutput = ""
     @State private var dectRingTask: Task<Void, Never>?
+    @State private var isShowingQuitConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -270,23 +271,11 @@ struct MainStatusView: View {
             }
             .buttonStyle(.plain)
 
-            Divider()
-                .padding(.vertical, 4)
-
-            // Footer
-            footerRow
         }
-        .simultaneousGesture(
-            TapGesture().onEnded {
-                if isEditingTraceTarget {
-                    dismissTraceTargetEditing()
-                }
-            }
-        )
         .overlay {
             if isShowingTR064Debug {
                 ZStack {
-                    Color.black.opacity(0.2)
+                    Color.black.opacity(0.08)
                         .ignoresSafeArea()
                         .onTapGesture {
                             isShowingTR064Debug = false
@@ -304,7 +293,7 @@ struct MainStatusView: View {
 
             if isShowingDECTRingProcess {
                 ZStack {
-                    Color.black.opacity(0.2)
+                    Color.black.opacity(0.08)
                         .ignoresSafeArea()
 
                     DECTRingProcessSheetView(
@@ -329,20 +318,13 @@ struct MainStatusView: View {
         }
         .onAppear {
             isTraceTargetFieldFocused = false
-            isEditingTraceTarget = false
         }
         .onDisappear {
             isShowingTR064Debug = false
             isTraceTargetFieldFocused = false
-            isEditingTraceTarget = false
             dectRingTask?.cancel()
             dectRingTask = nil
             isDECTRingRunning = false
-        }
-        .onChange(of: isTraceTargetFieldFocused) { _, focused in
-            if !focused && isEditingTraceTarget {
-                isEditingTraceTarget = false
-            }
         }
         .alert(
             "Find/ring phone?",
@@ -360,6 +342,12 @@ struct MainStatusView: View {
             }
         } message: { device in
             Text("Trigger ringing for \(device.name)?")
+        }
+        .alert("Really quit?", isPresented: $isShowingQuitConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("OK", role: .destructive) {
+                NSApp.terminate(nil)
+            }
         }
     }
 
@@ -432,25 +420,33 @@ struct MainStatusView: View {
                 Text("PingPong Network Monitor")
                     .font(.headline)
                 Spacer()
-                VStack(spacing: 6) {
-                    SettingsLink {
-                        Image(systemName: "gearshape")
-                            .font(.body)
-                            .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    ControlGroup {
+                        Button {
+                            AppContainer.settingsWindowController.show()
+                        } label: {
+                            Label("Settings", systemImage: "gearshape")
+                                .labelStyle(.iconOnly)
+                        }
+                        .help("Open settings")
+
+                        Button {
+                            isShowingQuitConfirmation = true
+                        } label: {
+                            Label("Quit", systemImage: "xmark.circle")
+                                .labelStyle(.iconOnly)
+                        }
+                        .help("Quit PingPong")
                     }
-                    .buttonStyle(.plain)
-                    .simultaneousGesture(TapGesture().onEnded {
-                        NSApp.activate(ignoringOtherApps: true)
-                    })
+                    .controlSize(.small)
 
                     Button {
                         runTR064Debug()
                     } label: {
-                        Image(systemName: "house.badge.wifi.fill")
-                            .font(.body)
-                            .foregroundStyle(.secondary)
+                        Label("TR-064 Debug", systemImage: "house.badge.wifi.fill")
+                            .labelStyle(.iconOnly)
                     }
-                    .buttonStyle(.plain)
+                    .controlSize(.small)
                     .help("Run TR-064 debug")
                 }
             }
@@ -502,61 +498,18 @@ struct MainStatusView: View {
             Text("Traceroute to")
                 .font(.body)
 
-            Group {
-                if isEditingTraceTarget {
-                    TextField("", text: $traceTargetInput, prompt: Text("google.com").foregroundStyle(.secondary))
-                        .textFieldStyle(.roundedBorder)
-                        .focused($isTraceTargetFieldFocused)
-                        .onSubmit {
-                            runTraceFromInput()
-                        }
-                } else {
-                    Button {
-                        isEditingTraceTarget = true
-                        DispatchQueue.main.async {
-                            isTraceTargetFieldFocused = true
-                        }
-                    } label: {
-                        HStack {
-                            Text(traceTargetInput.isEmpty ? "google.com" : traceTargetInput)
-                                .foregroundStyle(traceTargetInput.isEmpty ? .secondary : .primary)
-                                .lineLimit(1)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color.secondary.opacity(0.35), lineWidth: 1)
-                        )
-                    }
-                    .buttonStyle(.plain)
+            TextField("google.com", text: $traceTargetInput)
+                .textFieldStyle(.roundedBorder)
+                .focused($isTraceTargetFieldFocused)
+                .onSubmit {
+                    runTraceFromInput()
                 }
-            }
 
             Button("Trace") {
                 runTraceFromInput()
             }
             .buttonStyle(.bordered)
             .disabled(isResolvingTraceTarget)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-    }
-
-    private var footerRow: some View {
-        HStack {
-            Spacer()
-            Button {
-                NSApp.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Quit PongBar")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -575,17 +528,10 @@ struct MainStatusView: View {
             await MainActor.run {
                 traceTargetInput = sanitized
                 isResolvingTraceTarget = false
-                isEditingTraceTarget = false
                 isTraceTargetFieldFocused = false
                 navigate(.networkMap(resolvedIP))
             }
         }
-    }
-
-    private func dismissTraceTargetEditing() {
-        isTraceTargetFieldFocused = false
-        isEditingTraceTarget = false
-        NSApp.keyWindow?.makeFirstResponder(nil)
     }
 
     private func sanitizeTraceInput(_ input: String) -> String {
@@ -891,7 +837,7 @@ private struct TR064DebugSheetView: View {
     let onClose: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        PopoverOverlayCard {
             HStack {
                 Text("TR-064 Debug")
                     .font(.headline)
@@ -919,12 +865,6 @@ private struct TR064DebugSheetView: View {
                     .fill(Color.primary.opacity(0.04))
             )
         }
-        .padding(12)
-        .frame(maxWidth: 700, maxHeight: 480)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .shadow(radius: 14)
     }
 }
 
@@ -936,7 +876,7 @@ private struct DECTRingProcessSheetView: View {
     let onRetry: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        PopoverOverlayCard {
             HStack {
                 Text("Ring Phone")
                     .font(.headline)
@@ -977,12 +917,6 @@ private struct DECTRingProcessSheetView: View {
                 .disabled(isRunning)
             }
         }
-        .padding(12)
-        .frame(maxWidth: 700, maxHeight: 420)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .shadow(radius: 14)
     }
 }
 

@@ -13,9 +13,51 @@ final class PopoverState {
 }
 
 @MainActor
-private enum AppContainer {
+final class SettingsWindowController: NSObject, NSWindowDelegate {
+    private var windowController: NSWindowController?
+
+    func show() {
+        let windowController = windowController ?? makeWindowController()
+        self.windowController = windowController
+
+        NSApp.activate(ignoringOtherApps: true)
+        windowController.showWindow(nil)
+        windowController.window?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard notification.object as? NSWindow === windowController?.window else { return }
+        windowController = nil
+    }
+
+    private func makeWindowController() -> NSWindowController {
+        let hostingController = NSHostingController(
+            rootView: SettingsView()
+                .environment(AppContainer.monitor)
+        )
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "Settings"
+        window.setContentSize(NSSize(width: 730, height: 620))
+        window.minSize = NSSize(width: 730, height: 560)
+        window.maxSize = NSSize(width: 730, height: 10_000)
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.center()
+
+        if #available(macOS 11.0, *) {
+            window.toolbarStyle = .preference
+        }
+
+        return NSWindowController(window: window)
+    }
+}
+
+@MainActor
+enum AppContainer {
     static let monitor = NetworkMonitor()
     static let popoverState = PopoverState()
+    static let settingsWindowController = SettingsWindowController()
 }
 
 /// Main entry point for the PongBar menu bar application.
@@ -33,9 +75,11 @@ struct PongBarApp: App {
 }
 
 @MainActor
-final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
+    private let statusItemMenu = NSMenu()
+    private var shouldOpenSettingsAfterMenuClose = false
     private var updateTimer: Timer?
     private let ballAnimator = MenuBarBallAnimator()
     private let sounds = SoundManager.shared
@@ -50,7 +94,8 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
 
         if let button = statusItem.button {
             button.target = self
-            button.action = #selector(togglePopover(_:))
+            button.action = #selector(handleStatusItemClick(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.imageHugsTitle = true
             if let cell = button.cell as? NSButtonCell {
                 cell.wraps = true
@@ -58,6 +103,8 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
                 cell.lineBreakMode = .byWordWrapping
             }
         }
+
+        configureStatusItemMenu()
 
         let root = PopoverContentView()
             .environment(AppContainer.monitor)
@@ -91,13 +138,86 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
         AppContainer.popoverState.isVisible = false
     }
 
-    @objc private func togglePopover(_ sender: AnyObject?) {
+    @objc private func handleStatusItemClick(_ sender: AnyObject?) {
+        guard let event = NSApp.currentEvent else {
+            togglePopover(sender)
+            return
+        }
+
+        let shouldOpenMenu = event.type == .rightMouseUp
+            || (event.type == .leftMouseUp && event.modifierFlags.contains(.control))
+
+        if shouldOpenMenu {
+            presentStatusItemMenu()
+        } else {
+            togglePopover(sender)
+        }
+    }
+
+    private func togglePopover(_ sender: AnyObject?) {
         guard let button = statusItem?.button else { return }
         if popover.isShown {
             popover.performClose(sender)
         } else {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApp.activate(ignoringOtherApps: true)
+            clearPopoverFirstResponder()
+        }
+    }
+
+    private func configureStatusItemMenu() {
+        statusItemMenu.removeAllItems()
+        statusItemMenu.delegate = self
+
+        let titleItem = NSMenuItem(title: "PingPong", action: nil, keyEquivalent: "")
+        titleItem.isEnabled = false
+        statusItemMenu.addItem(titleItem)
+        statusItemMenu.addItem(.separator())
+
+        let settingsItem = NSMenuItem(title: "Settings", action: #selector(openSettingsFromMenu), keyEquivalent: "")
+        settingsItem.target = self
+        statusItemMenu.addItem(settingsItem)
+
+        let quitItem = NSMenuItem(title: "Quit", action: #selector(quitFromMenu), keyEquivalent: "")
+        quitItem.target = self
+        statusItemMenu.addItem(quitItem)
+    }
+
+    private func presentStatusItemMenu() {
+        popover.performClose(nil)
+        statusItem?.menu = statusItemMenu
+        statusItem?.button?.performClick(nil)
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        if menu === statusItemMenu {
+            statusItem?.menu = nil
+            if shouldOpenSettingsAfterMenuClose {
+                shouldOpenSettingsAfterMenuClose = false
+                DispatchQueue.main.async {
+                    AppContainer.settingsWindowController.show()
+                }
+            }
+        }
+    }
+
+    @objc private func openSettingsFromMenu() {
+        shouldOpenSettingsAfterMenuClose = true
+    }
+
+    @objc private func quitFromMenu() {
+        NSApp.terminate(nil)
+    }
+
+    private func clearPopoverFirstResponder(retriesRemaining: Int = 4) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
+            guard let self else { return }
+
+            if let window = self.popover.contentViewController?.view.window {
+                _ = window.makeFirstResponder(nil)
+            } else if retriesRemaining > 0 {
+                self.clearPopoverFirstResponder(retriesRemaining: retriesRemaining - 1)
+            }
         }
     }
 
