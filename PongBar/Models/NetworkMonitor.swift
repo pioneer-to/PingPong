@@ -810,8 +810,8 @@ final class NetworkMonitor {
 
     private func dectCredentials() throws -> (routerIP: String, username: String, password: String) {
         // Dedicated telephony credentials (calling use case only).
-        let account = "testing1"
-        let password = "Macbook2015"
+        let account = Config.fritzAppUsername
+        let password = Config.fritzAppPassword
         let routerIPGuess = guessedRouterIP(from: gatewayIP)
         return (routerIPGuess, account, password)
     }

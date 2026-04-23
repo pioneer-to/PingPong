@@ -226,8 +226,16 @@ enum Config {
         UserDefaults.standard.doubleOrNil(forKey: Keys.speedQualityHighThreshold) ?? Defaults.speedQualityHighThreshold
     }
 
-    static var pingPongAudioEnabled: Bool {
-        UserDefaults.standard.object(forKey: Keys.pingPongAudioEnabled) as? Bool ?? Defaults.pingPongAudioEnabled
+    static var fritzAppId: String {
+        UserDefaults.standard.string(forKey: Keys.fritzAppId) ?? "pingpong"
+    }
+
+    static var fritzAppUsername: String {
+        UserDefaults.standard.string(forKey: Keys.fritzAppUsername) ?? ""
+    }
+
+    static var fritzAppPassword: String {
+        UserDefaults.standard.string(forKey: Keys.fritzAppPassword) ?? ""
     }
 }
 
@@ -283,6 +291,9 @@ extension Config {
         static let wakeDelay: Double = 2.0
         static let chartRefreshInterval: Double = 3.0
         static let diagnosticRecentIncidents: Int = 20
+        static let fritzAppId = "pingpong"
+        static let fritzAppUsername = ""
+        static let fritzAppPassword = ""
     }
     // MARK: - Local Network Devices
     static var fritzUsername: String {
@@ -347,6 +358,9 @@ extension Config {
         
         static let fritzUsername = "fritzUsername"
         static let fritzPassword = "fritzPassword"
+        static let fritzAppId = "fritzAppId"
+        static let fritzAppUsername = "fritzAppUsername"
+        static let fritzAppPassword = "fritzAppPassword"
         static let localNetworkDevices = "localNetworkDevices"
         static let localDeviceWANBlockStates = "localDeviceWANBlockStates"
     }

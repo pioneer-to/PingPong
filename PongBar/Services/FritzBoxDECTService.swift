@@ -71,16 +71,51 @@ public enum FritzBoxDECTService {
         ringDuration: TimeInterval = 12,
         onLog: (@Sendable (String) -> Void)? = nil
     ) async throws {
+        let sanitizedRouterIP = routerIP.trimmingCharacters(in: .whitespacesAndNewlines)
         let sanitized = internalNumber.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sanitized.isEmpty else { return }
 
-        onLog?("Dialing internal number \(sanitized)...")
+        // 1. Try modern X_AVM-DE_OnTel:Ring action (preferred)
+        // This uses NewAppId and usually doesn't require "Dialing Help" to be enabled on the box.
+        let ontelNumber = sanitized.hasPrefix("**") ? String(sanitized.dropFirst(2)) : sanitized
+        onLog?("Triggering ring for \(ontelNumber) via X_AVM-DE_OnTel (AppId: \(Config.fritzAppId))...")
+        
+        let ringBody = "<NewPhoneNumber>\(xmlEscaped(ontelNumber))</NewPhoneNumber><NewDuration>\(Int(ringDuration))</NewDuration><NewAppId>\(xmlEscaped(Config.fritzAppId))</NewAppId>"
+        
+        var ontelSucceeded = false
+        do {
+            let (_, response) = try await FritzDigestAuth.sendSOAP(
+                routerHost: sanitizedRouterIP,
+                controlPath: onTelControlPath,
+                serviceURN: onTelServiceURN,
+                action: "Ring",
+                bodyArgs: ringBody,
+                username: username,
+                password: password,
+                timeout: 8
+            )
+            if response.statusCode == 200 {
+                onLog?("Ring command accepted.")
+                ontelSucceeded = true
+            } else {
+                onLog?("X_AVM-DE_OnTel:Ring rejected (HTTP \(response.statusCode)).")
+            }
+        } catch {
+            onLog?("X_AVM-DE_OnTel:Ring failed: \(error.localizedDescription)")
+        }
+        
+        if ontelSucceeded {
+            try? await Task.sleep(for: .seconds(ringDuration))
+            return
+        }
 
+        // 2. Fallback to legacy DialNumber trick (X_VoIP)
+        onLog?("Falling back to legacy DialNumber trick...")
         let basicDialBody = "<NewX_AVM-DE_PhoneNumber>\(xmlEscaped(sanitized))</NewX_AVM-DE_PhoneNumber>"
         do {
             onLog?("Dial via FritzDigestAuth (x_voip)...")
             let (_, response) = try await FritzDigestAuth.sendSOAP(
-                routerHost: routerIP,
+                routerHost: sanitizedRouterIP,
                 controlPath: voipControlPath,
                 serviceURN: voipServiceURN,
                 action: "X_AVM-DE_DialNumber",
@@ -113,7 +148,7 @@ public enum FritzBoxDECTService {
                 let setConfigBody = "<NewX_AVM-DE_PhoneName>\(xmlEscaped(phoneName))</NewX_AVM-DE_PhoneName>"
                 do {
                     let (_, response) = try await FritzDigestAuth.sendSOAP(
-                        routerHost: routerIP,
+                        routerHost: sanitizedRouterIP,
                         controlPath: voipControlPath,
                         serviceURN: voipServiceURN,
                         action: "X_AVM-DE_DialSetConfig",
@@ -164,7 +199,7 @@ public enum FritzBoxDECTService {
                 onLog?("Attempt: DialNumber(\(phoneNumber))")
                 do {
                     let (_, response) = try await FritzDigestAuth.sendSOAP(
-                        routerHost: routerIP,
+                        routerHost: sanitizedRouterIP,
                         controlPath: voipControlPath,
                         serviceURN: voipServiceURN,
                         action: "X_AVM-DE_DialNumber",
@@ -211,7 +246,7 @@ public enum FritzBoxDECTService {
 
         do {
             onLog?("Sending hangup...")
-            try await hangupCall(routerIP: routerIP, username: username, password: password)
+            try await hangupCall(routerIP: sanitizedRouterIP, username: username, password: password)
             onLog?("Hangup sent.")
         } catch {
             onLog?("Hangup failed: \(error.localizedDescription)")
@@ -228,9 +263,10 @@ public enum FritzBoxDECTService {
         username: String,
         password: String
     ) async throws {
+        let sanitizedRouterIP = routerIP.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
             _ = try await FritzDigestAuth.sendSOAP(
-                routerHost: routerIP,
+                routerHost: sanitizedRouterIP,
                 controlPath: voipControlPath,
                 serviceURN: voipServiceURN,
                 action: "X_AVM-DE_DialHangup",
@@ -241,7 +277,7 @@ public enum FritzBoxDECTService {
             )
         } catch {
             _ = try await sendSOAPReferenceStyle(
-                routerIP: routerIP,
+                routerIP: sanitizedRouterIP,
                 controlPath: voipControlPath,
                 serviceURN: voipServiceURN,
                 action: "X_AVM-DE_DialHangup",

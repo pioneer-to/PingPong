@@ -24,6 +24,10 @@ struct SettingsView: View {
     @AppStorage(Config.Keys.speedQualityMediumThreshold) private var speedQualityMediumThreshold: Double = Config.Defaults.speedQualityMediumThreshold
     @AppStorage(Config.Keys.speedQualityHighThreshold) private var speedQualityHighThreshold: Double = Config.Defaults.speedQualityHighThreshold
 
+    @AppStorage(Config.Keys.fritzAppId) private var fritzAppId: String = Config.Defaults.fritzAppId
+    @AppStorage(Config.Keys.fritzAppUsername) private var fritzAppUsername: String = Config.Defaults.fritzAppUsername
+    @AppStorage(Config.Keys.fritzAppPassword) private var fritzAppPassword: String = Config.Defaults.fritzAppPassword
+
     // Local network credentials
     @AppStorage("local.username") private var localUsername: String = ""
     @AppStorage("local.password") private var localPassword: String = ""
@@ -40,6 +44,9 @@ struct SettingsView: View {
     @State private var pendingRouterIP: String = ""
     @State private var localUsernameDraft: String = ""
     @State private var localPasswordDraft: String = ""
+    @State private var fritzAppIdDraft: String = ""
+    @State private var fritzAppUsernameDraft: String = ""
+    @State private var fritzAppPasswordDraft: String = ""
 
     var body: some View {
         TabView {
@@ -316,6 +323,15 @@ struct SettingsView: View {
                                 .textContentType(.password)
                         }
 
+                        HStack(spacing: 10) {
+                            Text("App ID")
+                                .font(.body.weight(.medium))
+                                .frame(width: 90, alignment: .leading)
+                            TextField("App identifier", text: $fritzAppIdDraft)
+                                .textFieldStyle(.roundedBorder)
+                                .disableAutocorrection(true)
+                        }
+
                         if !localPassword.isEmpty {
                             HStack {
                                 Text("Stored")
@@ -332,9 +348,42 @@ struct SettingsView: View {
                     Button("Save") {
                         localUsername = localUsernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                         localPassword = localPasswordDraft
+                        fritzAppId = fritzAppIdDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(localUsernameDraft == localUsername && localPasswordDraft == localPassword)
+                    .disabled(localUsernameDraft == localUsername && localPasswordDraft == localPassword && fritzAppIdDraft == fritzAppId)
+                }
+            }
+
+            Section("Telephony / App Credentials") {
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(spacing: 8) {
+                        HStack(spacing: 10) {
+                            Text("Username")
+                                .font(.body.weight(.medium))
+                                .frame(width: 90, alignment: .leading)
+                            TextField("App username", text: $fritzAppUsernameDraft)
+                                .textFieldStyle(.roundedBorder)
+                                .textContentType(.username)
+                                .disableAutocorrection(true)
+                        }
+
+                        HStack(spacing: 10) {
+                            Text("Password")
+                                .font(.body.weight(.medium))
+                                .frame(width: 90, alignment: .leading)
+                            SecureField("App password", text: $fritzAppPasswordDraft)
+                                .textFieldStyle(.roundedBorder)
+                                .textContentType(.password)
+                        }
+                    }
+
+                    Button("Save") {
+                        fritzAppUsername = fritzAppUsernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        fritzAppPassword = fritzAppPasswordDraft
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(fritzAppUsernameDraft == fritzAppUsername && fritzAppPasswordDraft == fritzAppPassword)
                 }
             }
 
@@ -409,6 +458,9 @@ struct SettingsView: View {
         .onAppear {
             localUsernameDraft = localUsername
             localPasswordDraft = localPassword
+            fritzAppIdDraft = fritzAppId
+            fritzAppUsernameDraft = fritzAppUsername
+            fritzAppPasswordDraft = fritzAppPassword
             let raw = localSelectedDeviceIDsRaw.trimmingCharacters(in: .whitespacesAndNewlines)
             if raw.isEmpty { localSelectedDeviceIDs = [] }
             else { localSelectedDeviceIDs = Set(raw.split(separator: ",").map(String.init)) }
