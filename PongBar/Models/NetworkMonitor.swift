@@ -478,8 +478,9 @@ final class NetworkMonitor {
 
                 for (index, device) in updatedDevices.enumerated() {
                     let state = self.localMapEntry(for: device.macAddress, in: statusMap)
-                    let isOnline = state?.active ?? false
                     let ip = state?.ip ?? device.ipAddress
+                    let isCurrentDevice = self.isCurrentLocalDevice(ipAddress: ip)
+                    let isOnline = isCurrentDevice || (state?.active ?? false)
                     let previousReachable = self.localResults[device.id]?.isReachable ?? false
 
                     var finalLatency: Double? = nil
@@ -530,7 +531,8 @@ final class NetworkMonitor {
                         self.localSignalStrengths[device.id] = nil
                     }
 
-                    if let speed = state?.speedMbps {
+                    let speed = state?.speedMbps ?? (isCurrentDevice ? self.currentDeviceThroughputMbps() : nil)
+                    if let speed {
                         self.localSpeeds[device.id] = speed
                         
                         var currentPingLatency: Double? = nil
@@ -542,7 +544,7 @@ final class NetworkMonitor {
                             macAddress: device.macAddress,
                             value: speed,
                             pingLatency: currentPingLatency,
-                            signalStrength: state?.signalStrengthPercent,
+                            signalStrength: wifiState?.signalStrengthPercent ?? state?.signalStrengthPercent ?? (isCurrentDevice ? self.currentWiFiSignalPercent() : nil),
                             unit: .mbitPerSecond,
                             timestamp: now
                         )
@@ -592,6 +594,38 @@ final class NetworkMonitor {
         let key3 = key1.replacingOccurrences(of: ":", with: "-")
         let key4 = key1.replacingOccurrences(of: ":", with: "")
         return map[key1] ?? map[key2] ?? map[key3] ?? map[key4]
+    }
+
+    private func isCurrentLocalDevice(ipAddress: String?) -> Bool {
+        guard
+            let currentIP = interfaceInfo?.ipAddress?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !currentIP.isEmpty,
+            let ipAddress = ipAddress?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !ipAddress.isEmpty
+        else {
+            return false
+        }
+        return currentIP == ipAddress
+    }
+
+    private func currentDeviceThroughputMbps() -> Double? {
+        guard
+            let interfaceName = interfaceInfo?.interfaceName,
+            let reading = throughput.currentReadings[interfaceName]
+        else {
+            return nil
+        }
+
+        let totalBytesPerSecond = reading.downloadBytesPerSec + reading.uploadBytesPerSec
+        let megabitsPerSecond = (totalBytesPerSecond * 8) / 1_000_000
+        guard megabitsPerSecond.isFinite, megabitsPerSecond >= 0 else { return nil }
+        return megabitsPerSecond
+    }
+
+    private func currentWiFiSignalPercent() -> Int? {
+        guard let rssi = interfaceInfo?.wifiRSSI else { return nil }
+        let clamped = min(max(rssi, -90), -30)
+        return Int(round((Double(clamped + 90) / 60.0) * 100.0))
     }
 
     private func normalizeMACKey(_ macAddress: String) -> String {

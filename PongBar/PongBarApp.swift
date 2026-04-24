@@ -86,6 +86,7 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
 
     private var cachedSpeedUp: (String, String, Int)?
     private var cachedSpeedDown: (String, String, Int)?
+    private var cachedSpeedAppearanceKey: String?
     private var cachedSpeedString: NSAttributedString?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -265,13 +266,21 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
             statusItem?.length = NSStatusItem.variableLength
             let up = internetDotIsRed ? ("0", "B", 0) : Self.speedParts(uploadBytesPerSecond)
             let down = internetDotIsRed ? ("0", "B", 0) : Self.speedParts(downloadBytesPerSecond)
-            
-            if let cachedUp = cachedSpeedUp, let cachedDown = cachedSpeedDown, up == cachedUp, down == cachedDown, let cached = cachedSpeedString {
+            let appearance = button.effectiveAppearance
+            let appearanceKey = Self.statusItemAppearanceKey(for: appearance)
+
+            if let cachedUp = cachedSpeedUp,
+               let cachedDown = cachedSpeedDown,
+               cachedSpeedAppearanceKey == appearanceKey,
+               up == cachedUp,
+               down == cachedDown,
+               let cached = cachedSpeedString {
                 button.attributedTitle = cached
             } else {
-                let string = Self.attributedTwoLineSpeed(up: up, down: down)
+                let string = Self.attributedTwoLineSpeed(up: up, down: down, appearance: appearance)
                 cachedSpeedUp = up
                 cachedSpeedDown = down
+                cachedSpeedAppearanceKey = appearanceKey
                 cachedSpeedString = string
                 button.attributedTitle = string
             }
@@ -293,11 +302,11 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
 
     private static func attributedSingleLine(_ text: String, color: NSColor?) -> NSAttributedString {
         let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        var attributes: [NSAttributedString.Key: Any] = [.font: font]
-        if let color {
-            attributes[.foregroundColor] = color
-        }
-        attributes[.baselineOffset] = -4.0
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: color ?? NSColor.labelColor,
+            .baselineOffset: -4.0
+        ]
         return NSAttributedString(string: " \(text)", attributes: attributes)
     }
 
@@ -316,6 +325,7 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
         let font = NSFont.monospacedDigitSystemFont(ofSize: 7, weight: .regular)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
+            .foregroundColor: NSColor.labelColor,
             .paragraphStyle: paragraph,
             .baselineOffset: -4.0
         ]
@@ -324,17 +334,19 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
 
     private static func attributedTwoLineSpeed(
         up: (String, String, Int),
-        down: (String, String, Int)
+        down: (String, String, Int),
+        appearance: NSAppearance
     ) -> NSAttributedString {
         let attachment = NSTextAttachment()
-        attachment.image = speedBadgeImage(up: up, down: down)
+        attachment.image = speedBadgeImage(up: up, down: down, appearance: appearance)
         attachment.bounds = NSRect(x: 0, y: -4, width: 34, height: 18)
         return NSAttributedString(attachment: attachment)
     }
 
     private static func speedBadgeImage(
         up: (String, String, Int),
-        down: (String, String, Int)
+        down: (String, String, Int),
+        appearance: NSAppearance
     ) -> NSImage {
         let size = NSSize(width: 34, height: 18)
         let image = NSImage(size: size)
@@ -342,6 +354,19 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
         image.lockFocus()
         defer { image.unlockFocus() }
 
+        appearance.performAsCurrentDrawingAppearance {
+            drawSpeedBadgeContents(up: up, down: down, size: size)
+        }
+
+        image.isTemplate = false
+        return image
+    }
+
+    private static func drawSpeedBadgeContents(
+        up: (String, String, Int),
+        down: (String, String, Int),
+        size: NSSize
+    ) {
         NSColor.clear.setFill()
         NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
 
@@ -398,9 +423,20 @@ final class StatusBarAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDele
 
         drawSegmentedLine(level: up.2, startX: numberX + 1, y: 17.0)
         drawSegmentedLine(level: down.2, startX: numberX + 1, y: 0.0)
+    }
 
-        image.isTemplate = false
-        return image
+    private static func statusItemAppearanceKey(for appearance: NSAppearance) -> String {
+        let matches: [NSAppearance.Name] = [
+            .aqua,
+            .darkAqua,
+            .vibrantLight,
+            .vibrantDark,
+            .accessibilityHighContrastAqua,
+            .accessibilityHighContrastDarkAqua,
+            .accessibilityHighContrastVibrantLight,
+            .accessibilityHighContrastVibrantDark
+        ]
+        return appearance.bestMatch(from: matches)?.rawValue ?? appearance.name.rawValue
     }
 
     private static func drawSegmentedLine(level: Int, startX: CGFloat, y: CGFloat) {
@@ -658,14 +694,14 @@ private final class MenuBarBallAnimator {
             let t = CGFloat(idx) / CGFloat(max(1, frameCount - 1))
             return yMin + (yMax - yMin) * t
         }
-        return yOffsets.map { makeFrame(yOffset: $0, color: .white) }
+        return yOffsets.map { makeFrame(yOffset: $0, color: .black, isTemplate: true) }
     }
 
     private static func makeCenterFrame(color: NSColor) -> NSImage {
-        makeFrame(yOffset: 0, color: color)
+        makeFrame(yOffset: 0, color: color, isTemplate: false)
     }
 
-    private static func makeFrame(yOffset: CGFloat, color: NSColor) -> NSImage {
+    private static func makeFrame(yOffset: CGFloat, color: NSColor, isTemplate: Bool) -> NSImage {
         let size = NSSize(width: 8, height: 16)
         let dotDiameter: CGFloat = 3.0
         let image = NSImage(size: size)
@@ -686,7 +722,7 @@ private final class MenuBarBallAnimator {
 
         color.setFill()
         NSBezierPath(ovalIn: dotRect).fill()
-        image.isTemplate = false
+        image.isTemplate = isTemplate
         return image
     }
 }

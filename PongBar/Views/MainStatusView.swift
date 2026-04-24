@@ -130,7 +130,7 @@ struct MainStatusView: View {
                                     signalStrengthPercent: monitor.localSignalStrengths[device.id],
                                     activeBand: monitor.localBands[device.id],
                                     supportedBands: device.supportedBands,
-                                    showStatusIndicator: !isCurrentDevice,
+                                    showStatusIndicator: true,
                                     showDisclosure: true,
                                     isCurrentDevice: isCurrentDevice,
                                     isWANBlocked: monitor.isLocalDeviceWANBlocked(device)
