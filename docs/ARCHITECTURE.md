@@ -1,17 +1,17 @@
 # Architecture
 
-This document describes the internal architecture of PongBar, a macOS menu bar network monitoring application.
+This document describes the internal architecture of PingPongBar, a macOS menu bar network monitoring application.
 
 ## Overview
 
-PongBar follows a **modified MVVM** pattern adapted for SwiftUI's `@Observable` macro system. The `@Observable` objects serve as both model containers and reactive state providers that views observe directly through the `@Environment` mechanism, eliminating the need for explicit ViewModel bindings.
+PingPongBar follows a **modified MVVM** pattern adapted for SwiftUI's `@Observable` macro system. The `@Observable` objects serve as both model containers and reactive state providers that views observe directly through the `@Environment` mechanism, eliminating the need for explicit ViewModel bindings.
 
 ## Layer Diagram
 
 ```
 ┌─────────────────────────────────────────────────┐
 │                   App Entry                      │
-│              PongBarApp.swift                     │
+│              PingPongBarApp.swift                     │
 │         MenuBarExtra + Settings Scene            │
 └──────────────────────┬──────────────────────────┘
                        │
@@ -138,7 +138,7 @@ All mutable application state lives in `@Observable` classes isolated to `@MainA
 
 | Class | Role | Owned By |
 |-------|------|----------|
-| `NetworkMonitor` | Root orchestrator, single source of truth | `PongBarApp` (`@State`) |
+| `NetworkMonitor` | Root orchestrator, single source of truth | `PingPongBarApp` (`@State`) |
 | `MetricsEngine` | Per-target rolling metrics | `NetworkMonitor` |
 | `IncidentManager` | Incident lifecycle | `NetworkMonitor` |
 | `ThroughputEngine` | Interface throughput | `NetworkMonitor` |
@@ -159,7 +159,7 @@ Views access `NetworkMonitor` via `@Environment(NetworkMonitor.self)`. Sub-engin
 
 ## Navigation
 
-PongBar uses a **manual page stack** instead of `NavigationStack`. This is a deliberate workaround for a known macOS bug where `NavigationStack` causes the `MenuBarExtra` popover to dismiss on push.
+PingPongBar uses a **manual page stack** instead of `NavigationStack`. This is a deliberate workaround for a known macOS bug where `NavigationStack` causes the `MenuBarExtra` popover to dismiss on push.
 
 ```swift
 // PopoverContentView.swift
@@ -268,7 +268,7 @@ VPN detection is deeply integrated throughout the stack:
 
 ## Menu Bar Integration
 
-PongBar uses SwiftUI's `MenuBarExtra` with `.window` style:
+PingPongBar uses SwiftUI's `MenuBarExtra` with `.window` style:
 
 ```swift
 MenuBarExtra {

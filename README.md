@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/icon-256.png" width="128" height="128" alt="PongBar Icon">
+  <img src="assets/icon-256.png" width="128" height="128" alt="PingPongBar Icon">
 </p>
 
-<h1 align="center">PongBar</h1>
+<h1 align="center">PingPongBar</h1>
 
 <p align="center">
   <b>Network monitoring that lives in your menu bar</b>
@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  A lightweight macOS menu bar app for real-time network monitoring. PongBar continuously tracks your internet connectivity, router health, DNS performance, and throughput — all from a tiny status icon in your menu bar.
+  A lightweight macOS menu bar app for real-time network monitoring. PingPongBar continuously tracks your internet connectivity, router health, DNS performance, and throughput — all from a tiny status icon in your menu bar.
 </p>
 
 ---
@@ -69,10 +69,10 @@
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/PrometheusSourse/PongBar.git
-   cd PongBar
+   git clone https://github.com/PrometheusSourse/PingPongBar.git
+   cd PingPongBar
    ```
-2. Open `PongBar.xcodeproj` in Xcode 15+
+2. Open `PingPongBar.xcodeproj` in Xcode 15+
 3. Build and run (⌘R)
 
 The app will appear as a small colored dot in your menu bar.
@@ -121,10 +121,10 @@ Access via the gear icon or `⌘,`:
 
 ## Architecture
 
-PongBar follows a modified MVVM pattern with SwiftUI's `@Observable` framework:
+PingPongBar follows a modified MVVM pattern with SwiftUI's `@Observable` framework:
 
 ```
-PongBarApp (Menu Bar Entry)
+PingPongBarApp (Menu Bar Entry)
     │
     ▼
 View Layer (16 SwiftUI views)
@@ -155,8 +155,8 @@ For detailed architecture documentation, see [docs/ARCHITECTURE.md](docs/ARCHITE
 ## Project Structure
 
 ```
-PongBar/
-├── PongBarApp.swift              # App entry point, MenuBarExtra setup
+PingPongBar/
+├── PingPongBarApp.swift              # App entry point, MenuBarExtra setup
 ├── Config.swift                  # Centralized configuration with UserDefaults
 ├── Models/
 │   ├── NetworkMonitor.swift      # Central orchestrator, main monitoring loop

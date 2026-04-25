@@ -1,6 +1,6 @@
 # Configuration Reference
 
-All PongBar settings are stored in `UserDefaults` and can be modified via the Settings UI or `defaults write` commands.
+All PingPongBar settings are stored in `UserDefaults` and can be modified via the Settings UI or `defaults write` commands.
 
 ## Monitoring
 
@@ -71,7 +71,7 @@ Per-target notification enable/disable is managed through the Settings UI.
 | Retention Period | `retentionPeriod` | `604800` s (7 days) | SQLite sample retention |
 | Trim Interval | `storageTrimInterval` | `500` | Writes between trim operations |
 
-Data is stored in `~/Library/Application Support/PongBar/samples.sqlite`.
+Data is stored in `~/Library/Application Support/PingPongBar/samples.sqlite`.
 
 ## Network Switch Grace Period
 
@@ -109,19 +109,19 @@ This prevents false incidents during VPN switching, WiFi roaming, or brief netwo
 
 ```bash
 # Set ping interval to 5 seconds
-defaults write k.PongBar pingInterval -float 5.0
+defaults write com.timo.PingPongBar pingInterval -float 5.0
 
 # Use Google DNS as test target
-defaults write k.PongBar internetHost -string "8.8.8.8"
+defaults write com.timo.PingPongBar internetHost -string "8.8.8.8"
 
 # Increase grace period to 5 consecutive failures
-defaults write k.PongBar networkSwitchGracePings -int 5
+defaults write com.timo.PingPongBar networkSwitchGracePings -int 5
 
 # Set data retention to 30 days
-defaults write k.PongBar retentionPeriod -float 2592000
+defaults write com.timo.PingPongBar retentionPeriod -float 2592000
 
 # Reset a setting to default
-defaults delete k.PongBar pingInterval
+defaults delete com.timo.PingPongBar pingInterval
 ```
 
 > **Note:** Changes take effect on the next monitoring cycle (no restart required for most settings).

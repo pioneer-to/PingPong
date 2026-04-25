@@ -1,6 +1,6 @@
-# Contributing to PongBar
+# Contributing to PingPongBar
 
-Thank you for your interest in contributing to PongBar! This document provides guidelines and information for contributors.
+Thank you for your interest in contributing to PingPongBar! This document provides guidelines and information for contributors.
 
 ## Getting Started
 
@@ -15,10 +15,10 @@ Thank you for your interest in contributing to PongBar! This document provides g
 1. Fork the repository
 2. Clone your fork:
    ```bash
-   git clone https://github.com/PrometheusSourse/PongBar.git
-   cd PongBar
+   git clone https://github.com/PrometheusSourse/PingPongBar.git
+   cd PingPongBar
    ```
-3. Open `PongBar.xcodeproj` in Xcode
+3. Open `PingPongBar.xcodeproj` in Xcode
 4. Build and run (Cmd+R)
 
 ## Development Guidelines
@@ -32,7 +32,7 @@ Thank you for your interest in contributing to PongBar! This document provides g
 
 ### Architecture
 
-PongBar uses a modified MVVM pattern with SwiftUI's `@Observable`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
+PingPongBar uses a modified MVVM pattern with SwiftUI's `@Observable`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
 Key rules:
 - **Views** never call services directly — always go through `NetworkMonitor`
@@ -42,7 +42,7 @@ Key rules:
 
 ### Adding a New Service
 
-1. Create a new file in `PongBar/Services/`
+1. Create a new file in `PingPongBar/Services/`
 2. Implement as an `enum` with `static` methods
 3. Use `async/await` for all I/O operations
 4. Validate inputs at the boundary using `HostValidator` where applicable
@@ -50,7 +50,7 @@ Key rules:
 
 ### Adding a New View
 
-1. Create a new file in `PongBar/Views/`
+1. Create a new file in `PingPongBar/Views/`
 2. Access state via `@Environment(NetworkMonitor.self)`
 3. Add a new case to `PopoverPage` enum if it needs navigation
 4. Use the `navigate` / `goBack` closures for navigation (not `NavigationStack`)
