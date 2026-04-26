@@ -29,7 +29,7 @@ struct MainStatusView: View {
         VStack(spacing: 0) {
             // Header
             headerRow
-            Divider()
+            sectionTopBoundary(lastUpdatedAt: monitor.builtInLastUpdatedAt, interval: monitor.pingInterval)
 
             // Target status rows (clickable → chart detail)
             StatusRowView(
@@ -60,8 +60,7 @@ struct MainStatusView: View {
                 sparklineData: monitor.metrics.latencyHistory[.dns] ?? []
             ) { navigate(.targetDetail(.dns, monitor.activeDNSServer ?? Config.dnsTestDomain)) }
 
-            Divider()
-                .padding(.vertical, 4)
+            sectionBottomBoundary(lastUpdatedAt: monitor.builtInLastUpdatedAt, interval: monitor.pingInterval)
 
             tracerouteInputRow
 
@@ -92,6 +91,8 @@ struct MainStatusView: View {
 
             // Local Network LAN Devices
             if !monitor.localDevices.isEmpty {
+                sectionTopBoundary(lastUpdatedAt: monitor.localDeviceLastUpdatedAt, interval: monitor.localDeviceSpeedInterval)
+
                 HStack(spacing: 8) {
                     Text("")
                         .frame(width: 14)
@@ -161,11 +162,12 @@ struct MainStatusView: View {
                 }
                 .frame(maxHeight: 250)
                 .fixedSize(horizontal: false, vertical: true)
+
+                sectionBottomBoundary(lastUpdatedAt: monitor.localDeviceLastUpdatedAt, interval: monitor.localDeviceSpeedInterval)
             }
 
             // DECT Devices
-            Divider()
-                .padding(.vertical, 4)
+            sectionTopBoundary(lastUpdatedAt: monitor.dectLastUpdatedAt, interval: monitor.localDeviceSpeedInterval)
 
             HStack(spacing: 8) {
                 Text("")
@@ -238,8 +240,7 @@ struct MainStatusView: View {
                 }
             }
 
-            Divider()
-                .padding(.vertical, 4)
+            sectionBottomBoundary(lastUpdatedAt: monitor.dectLastUpdatedAt, interval: monitor.localDeviceSpeedInterval)
 
             // Uptime bar
             UptimeBarView(percentage: monitor.incidentManager.uptimeToday)
@@ -350,6 +351,20 @@ struct MainStatusView: View {
             Button("OK", role: .destructive) {
                 NSApp.terminate(nil)
             }
+        }
+    }
+
+    private func sectionTopBoundary(lastUpdatedAt: Date?, interval: TimeInterval) -> some View {
+        VStack(spacing: 0) {
+            Divider()
+            SectionTimerLineView(lastUpdatedAt: lastUpdatedAt, interval: interval)
+        }
+    }
+
+    private func sectionBottomBoundary(lastUpdatedAt: Date?, interval: TimeInterval) -> some View {
+        VStack(spacing: 0) {
+            SectionTimerLineView(lastUpdatedAt: lastUpdatedAt, interval: interval)
+            Divider()
         }
     }
 

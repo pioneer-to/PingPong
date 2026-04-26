@@ -17,6 +17,7 @@ struct NetworkInterfaceInfo {
     let type: InterfaceType
     let wifiSSID: String?           // Only for WiFi
     let wifiRSSI: Int?              // Signal strength in dBm (only for WiFi)
+    let linkSpeedMbps: Double?      // Active link rate when the OS exposes it
 
     enum InterfaceType: String {
         case wifi = "WiFi"
@@ -94,7 +95,7 @@ enum NetworkInterfaceService {
             let type: NetworkInterfaceInfo.InterfaceType = phys.name.hasPrefix("en") ? .ethernet : .other
             return NetworkInterfaceInfo(
                 interfaceName: phys.name, ipAddress: phys.ip, macAddress: phys.macAddress,
-                type: type, wifiSSID: nil, wifiRSSI: nil
+                type: type, wifiSSID: nil, wifiRSSI: nil, linkSpeedMbps: nil
             )
         }
 
@@ -109,6 +110,7 @@ enum NetworkInterfaceService {
               iface.powerOn() else { return nil }
 
         let rssi = iface.rssiValue()
+        let linkSpeedMbps = iface.transmitRate()
         let name = iface.interfaceName ?? "en0"
         let ip = getIPAddress(for: name)
         let macAddress = iface.hardwareAddress()?.lowercased() ?? snapshot?.macAddress(for: name) ?? getMACAddress(for: name)
@@ -119,7 +121,8 @@ enum NetworkInterfaceService {
             macAddress: macAddress,
             type: .wifi,
             wifiSSID: ssid,
-            wifiRSSI: rssi
+            wifiRSSI: rssi,
+            linkSpeedMbps: linkSpeedMbps > 0 ? linkSpeedMbps : nil
         )
     }
 
@@ -161,7 +164,8 @@ enum NetworkInterfaceService {
                     macAddress: getMACAddress(for: name),
                     type: type,
                     wifiSSID: nil,
-                    wifiRSSI: nil
+                    wifiRSSI: nil,
+                    linkSpeedMbps: nil
                 )
             }
         }

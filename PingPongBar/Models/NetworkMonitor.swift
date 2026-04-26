@@ -66,6 +66,9 @@ final class NetworkMonitor {
     var localWANBlockedByMAC: [String: Bool] = [:]
     var hasCompletedInitialLocalDeviceRefresh = false
     var dectDevices: [DECTDevice] = []
+    var builtInLastUpdatedAt: Date?
+    var localDeviceLastUpdatedAt: Date?
+    var dectLastUpdatedAt: Date?
 
     // MARK: - Configuration
 
@@ -339,6 +342,7 @@ final class NetworkMonitor {
         currentResults[.internet] = internetResult
         currentResults[.router] = routerResult
         currentResults[.dns] = dnsResult
+        builtInLastUpdatedAt = now
         metrics.update(result: internetResult, vpnActive: vpnActive)
         metrics.update(result: routerResult, vpnActive: vpnActive)
         metrics.update(result: dnsResult, vpnActive: vpnActive)
@@ -418,6 +422,7 @@ final class NetworkMonitor {
             )
             await MainActor.run {
                 self.dectDevices = devices
+                self.dectLastUpdatedAt = Date()
             }
         } catch {
             if let fallback = dectFallbackCredentials(), fallback.username != account || fallback.password != password {
@@ -430,6 +435,7 @@ final class NetworkMonitor {
                     )
                     await MainActor.run {
                         self.dectDevices = devices
+                        self.dectLastUpdatedAt = Date()
                     }
                     return
                 } catch {
@@ -444,6 +450,7 @@ final class NetworkMonitor {
     private func refreshLocalDeviceSpeeds() async {
         guard !isDECTRingOperationInProgress else { return }
         guard !localDevices.isEmpty else {
+            localDeviceLastUpdatedAt = Date()
             hasCompletedInitialLocalDeviceRefresh = true
             return
         }
@@ -452,6 +459,7 @@ final class NetworkMonitor {
         let account = UserDefaults.standard.string(forKey: "local.username")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let password = UserDefaults.standard.string(forKey: "local.password")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !account.isEmpty, !password.isEmpty else {
+            localDeviceLastUpdatedAt = Date()
             hasCompletedInitialLocalDeviceRefresh = true
             return
         }
@@ -499,6 +507,7 @@ final class NetworkMonitor {
             let now = Date()
             await MainActor.run {
                 defer {
+                    self.localDeviceLastUpdatedAt = now
                     self.hasCompletedInitialLocalDeviceRefresh = true
                     self.localDeviceRefreshTask = nil
                 }
@@ -563,7 +572,9 @@ final class NetworkMonitor {
                         self.localSignalStrengths[device.id] = nil
                     }
 
-                    let speed = state?.speedMbps ?? (isCurrentDevice ? self.currentDeviceThroughputMbps() : nil)
+                    let speed = isCurrentDevice
+                        ? (self.currentDeviceLinkSpeedMbps() ?? self.nonZeroSpeed(from: state?.speedMbps) ?? self.currentDeviceThroughputMbps())
+                        : state?.speedMbps
                     if let speed {
                         self.localSpeeds[device.id] = speed
                         
@@ -580,7 +591,7 @@ final class NetworkMonitor {
                             unit: .mbitPerSecond,
                             timestamp: now
                         )
-                    } else {
+                    } else if !isCurrentDevice {
                         self.localSpeeds[device.id] = nil
                     }
 
@@ -657,8 +668,18 @@ final class NetworkMonitor {
 
         let totalBytesPerSecond = reading.downloadBytesPerSec + reading.uploadBytesPerSec
         let megabitsPerSecond = (totalBytesPerSecond * 8) / 1_000_000
-        guard megabitsPerSecond.isFinite, megabitsPerSecond >= 0 else { return nil }
+        guard megabitsPerSecond.isFinite, megabitsPerSecond > 0 else { return nil }
         return megabitsPerSecond
+    }
+
+    private func currentDeviceLinkSpeedMbps() -> Double? {
+        guard let speed = interfaceInfo?.linkSpeedMbps, speed.isFinite, speed > 0 else { return nil }
+        return speed
+    }
+
+    private func nonZeroSpeed(from speed: Double?) -> Double? {
+        guard let speed, speed.isFinite, speed > 0 else { return nil }
+        return speed
     }
 
     private func currentWiFiSignalPercent() -> Int? {
@@ -679,7 +700,7 @@ final class NetworkMonitor {
                 detail: interfaceInfo.ipAddress ?? device.ipAddress
             )
 
-            if let speed = currentDeviceThroughputMbps() {
+            if let speed = currentDeviceLinkSpeedMbps() ?? currentDeviceThroughputMbps() {
                 localSpeeds[device.id] = speed
                 LocalDeviceSpeedStorage.shared.recordSpeed(
                     macAddress: device.macAddress,
