@@ -7,6 +7,7 @@
 
 import Foundation
 import AVFoundation
+import AppKit
 
 @MainActor
 final class SoundManager {
@@ -17,6 +18,7 @@ final class SoundManager {
     private let pitchEffect = AVAudioUnitTimePitch()
     private let baseBuffer: AVAudioPCMBuffer?
     private var isEngineStarted = false
+    private var isSuspended = false
 
     private init() {
         engine.attach(playerNode)
@@ -27,11 +29,52 @@ final class SoundManager {
         engine.connect(pitchEffect, to: engine.mainMixerNode, format: format)
 
         baseBuffer = SoundManager.makePingBuffer(format: format)
+
+        setupObservers()
+    }
+
+    private func setupObservers() {
+        let nc = NSWorkspace.shared.notificationCenter
+        nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.handleSleep()
+        }
+        nc.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.handleWake()
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleConfigurationChange()
+        }
+    }
+
+    private func handleConfigurationChange() {
+        // Re-start engine if it was already supposed to be running
+        if isEngineStarted {
+            isEngineStarted = false
+            startEngineIfNeeded()
+        }
+    }
+
+    private func handleSleep() {
+        isSuspended = true
+        playerNode.stop() // Stops and clears all scheduled buffers
+    }
+
+    private func handleWake() {
+        Task {
+            // Wait for audio hardware to initialize after wake
+            try? await Task.sleep(for: .seconds(Config.wakeDelay))
+            isSuspended = false
+        }
     }
 
     /// Pitch in cents: 0 = original, +1200 = one octave up, -1200 = one octave down.
     func playPing(pitch: Float = 0) {
-        guard let buffer = baseBuffer else { return }
+        guard !isSuspended, let buffer = baseBuffer else { return }
         startEngineIfNeeded()
         pitchEffect.pitch = pitch
         playerNode.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)

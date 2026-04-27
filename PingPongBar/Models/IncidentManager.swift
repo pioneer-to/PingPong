@@ -80,7 +80,10 @@ final class IncidentManager {
         if !result.isReachable {
             consecutiveFailures[target, default: 0] += 1
 
-            if activeIncidents[target] == nil &&
+            // Only trigger NEW incidents for the primary 'internet' target.
+            // Other targets (router, dns) are used for classification but don't
+            // need their own separate incident records if they fail as part of a larger outage.
+            if target == .internet && activeIncidents[target] == nil &&
                consecutiveFailures[target, default: 0] >= Config.networkSwitchGracePings {
                 let category = classify(currentResults: currentResults)
                 let incident = Incident(target: target, category: category)

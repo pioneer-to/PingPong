@@ -13,12 +13,14 @@ struct CustomTarget: Identifiable, Codable, Hashable {
     var name: String
     var host: String
     var isEnabled: Bool
+    var notifyDown: Bool
 
-    init(name: String, host: String, isEnabled: Bool = true) {
+    init(name: String, host: String, isEnabled: Bool = true, notifyDown: Bool = true) {
         self.id = UUID()
         self.name = name
         self.host = host
         self.isEnabled = isEnabled
+        self.notifyDown = notifyDown
     }
 }
 

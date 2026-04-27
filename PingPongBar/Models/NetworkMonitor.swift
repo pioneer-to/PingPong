@@ -383,14 +383,26 @@ final class NetworkMonitor {
         }
         for (id, latency) in customPingResults {
             guard let target = enabledTargets.first(where: { $0.id == id }) else { continue }
+            let isReachable = latency != nil
+            let previousResult = customResults[id]
+            let wasReachable = previousResult?.isReachable ?? true // Assume reachable if no previous data
+
             // NOTE: .internet is a placeholder target for custom entries — they are keyed by UUID
             // in customResults, not by PingTarget. The detail field holds the actual host.
-            customResults[id] = PingResult(target: .internet, timestamp: now, isReachable: latency != nil, latency: latency, detail: target.host)
+            customResults[id] = PingResult(target: .internet, timestamp: now, isReachable: isReachable, latency: latency, detail: target.host)
             var history = customLatencyHistory[id] ?? []
             history.append(latency)
             if history.count > Config.maxHistorySamples { history.removeFirst(history.count - Config.maxHistorySamples) }
             customLatencyHistory[id] = history
             SQLiteStorage.shared.record(LatencySample(target: .internet, timestamp: now, latency: latency, vpnActive: vpnActive, storageKey: "custom.\(target.host)"))
+
+            // Notification logic for custom targets
+            if wasReachable && !isReachable {
+                NotificationService.notifyDown(target: .internet, host: target.host)
+            } else if !wasReachable && isReachable {
+                let downtime = now.timeIntervalSince(previousResult?.timestamp ?? now)
+                NotificationService.notifyRecovery(target: .internet, downtime: downtime, host: target.host)
+            }
         }
         
         SQLiteStorage.shared.flush()
@@ -573,9 +585,9 @@ final class NetworkMonitor {
                     }
 
                     let speed = isCurrentDevice
-                        ? (self.currentDeviceLinkSpeedMbps() ?? self.nonZeroSpeed(from: state?.speedMbps) ?? self.currentDeviceThroughputMbps())
+                        ? (self.currentDeviceLinkSpeedMbps() ?? self.nonZeroSpeed(from: state?.speedMbps))
                         : state?.speedMbps
-                    if let speed {
+                    if let speed, speed > 0 {
                         self.localSpeeds[device.id] = speed
                         
                         var currentPingLatency: Double? = nil
@@ -596,7 +608,7 @@ final class NetworkMonitor {
                     }
 
                     if previousReachable && !finalReachable && device.notifyConnectivityDown {
-                        NotificationService.notifyDown(target: .internet)
+                        NotificationService.notifyDown(target: .internet) // Internet is a placeholder for local devices here
                     }
                 }
                 
@@ -700,7 +712,7 @@ final class NetworkMonitor {
                 detail: interfaceInfo.ipAddress ?? device.ipAddress
             )
 
-            if let speed = currentDeviceLinkSpeedMbps() ?? currentDeviceThroughputMbps() {
+            if let speed = currentDeviceLinkSpeedMbps(), speed > 0 {
                 localSpeeds[device.id] = speed
                 LocalDeviceSpeedStorage.shared.recordSpeed(
                     macAddress: device.macAddress,
@@ -773,6 +785,13 @@ final class NetworkMonitor {
     func toggleCustomTarget(_ target: CustomTarget) {
         if let index = customTargets.firstIndex(where: { $0.id == target.id }) {
             customTargets[index].isEnabled.toggle()
+            CustomTargetStore.save(customTargets)
+        }
+    }
+
+    func toggleCustomTargetNotification(_ target: CustomTarget) {
+        if let index = customTargets.firstIndex(where: { $0.id == target.id }) {
+            customTargets[index].notifyDown.toggle()
             CustomTargetStore.save(customTargets)
         }
     }

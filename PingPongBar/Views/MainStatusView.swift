@@ -479,7 +479,7 @@ struct MainStatusView: View {
                 if let info = monitor.interfaceInfo {
                     Text(info.summary)
                 }
-                if let publicIP = monitor.publicIP {
+                if UserDefaults.standard.bool(forKey: Config.Keys.showPublicIP), let publicIP = monitor.publicIP {
                     Text("·")
                     Text(publicIP)
                 }

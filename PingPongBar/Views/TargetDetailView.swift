@@ -252,14 +252,15 @@ struct TargetDetailView: View {
         }
         .chartYScale(domain: yDomain)
         .chartOverlay { proxy in
-            GeometryReader { _ in
+            GeometryReader { geometry in
                 Rectangle()
                     .fill(.clear)
                     .contentShape(Rectangle())
                     .onContinuousHover { phase in
                         switch phase {
                         case .active(let location):
-                            guard let date: Date = proxy.value(atX: location.x) else {
+                            let xPosition = location.x - geometry[proxy.plotAreaFrame].origin.x
+                            guard let date: Date = proxy.value(atX: xPosition) else {
                                 hoveredSample = nil
                                 return
                             }

@@ -19,6 +19,7 @@ struct CustomTargetDetailView: View {
     @State private var selectedRange: TimeRange = .fifteenMin
     @State private var samples: [LatencySample] = []
     @State private var rawStats = LatencyStatsResult(avg: 0, min: 0, max: 0, loss: 0, jitter: 0)
+    @State private var hoveredSample: LatencySample?
 
     @State private var timeOffset: TimeInterval = 0
     @State private var loadTask: Task<Void, Never>?
@@ -77,6 +78,19 @@ struct CustomTargetDetailView: View {
                     .foregroundStyle(.red)
                     .symbolSize(20)
                 }
+
+                if let hovered = hoveredSample, let lat = hovered.latency {
+                    RuleMark(x: .value("Time", hovered.timestamp))
+                        .foregroundStyle(.secondary.opacity(0.3))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 2]))
+
+                    PointMark(
+                        x: .value("Time", hovered.timestamp),
+                        y: .value("Latency", lat)
+                    )
+                    .foregroundStyle(Color.orange)
+                    .symbolSize(30)
+                }
             }
             .chartYScale(domain: yDomain)
             .chartXAxis {
@@ -95,6 +109,58 @@ struct CustomTargetDetailView: View {
                     AxisValueLabel {
                         if let v = value.as(Double.self) {
                             Text("\(Int(v))").font(.system(size: 8)).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .chartOverlay { proxy in
+                GeometryReader { geometry in
+                    Rectangle()
+                        .fill(.clear)
+                        .contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active(let location):
+                                let xPosition = location.x - geometry[proxy.plotAreaFrame].origin.x
+                                guard let date: Date = proxy.value(atX: xPosition) else {
+                                    hoveredSample = nil
+                                    return
+                                }
+                                hoveredSample = samples
+                                    .filter { $0.latency != nil }
+                                    .min(by: {
+                                        abs($0.timestamp.timeIntervalSince(date)) <
+                                        abs($1.timestamp.timeIntervalSince(date))
+                                    })
+                            case .ended:
+                                hoveredSample = nil
+                            }
+                        }
+                }
+            }
+            .chartBackground { proxy in
+                if let hovered = hoveredSample, let lat = hovered.latency {
+                    GeometryReader { geometry in
+                        if let anchor = proxy.position(forX: hovered.timestamp) {
+                            let x = min(max(anchor, 45), geometry.size.width - 45)
+                            VStack(spacing: 1) {
+                                HStack(spacing: 3) {
+                                    if hovered.vpnActive {
+                                        Text("VPN")
+                                            .font(.system(size: 7, weight: .bold))
+                                            .foregroundStyle(.purple)
+                                    }
+                                    Text(String(format: "%.1f ms", lat))
+                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                }
+                                Text(Formatters.timeOnly(hovered.timestamp))
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 4))
+                            .position(x: x, y: 12)
                         }
                     }
                 }

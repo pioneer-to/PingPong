@@ -130,17 +130,6 @@ struct SettingsView: View {
                     .pickerStyle(.segmented)
                     .frame(width: 200)
                 }
-
-                HStack {
-                    Text("Ping pong animation speed")
-                    Spacer()
-                    Slider(value: $pingPongAnimationSpeed, in: 0.5...1.5, step: 0.1)
-                        .frame(width: 180)
-                    Text(String(format: "%.1fx", pingPongAnimationSpeed))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 42, alignment: .trailing)
-                }
             }
 
             Section("System") {
@@ -266,9 +255,21 @@ struct SettingsView: View {
     private var notificationsTab: some View {
         Form {
             Section("Notify when target goes down") {
-                Toggle("Internet (1.1.1.1)", isOn: $notifyInternet)
+                Toggle("Internet (\(Config.internetHost))", isOn: $notifyInternet)
                 Toggle("Router", isOn: $notifyRouter)
                 Toggle("DNS Resolve", isOn: $notifyDNS)
+                
+                if !monitor.customTargets.isEmpty {
+                    Divider()
+                        .padding(.vertical, 4)
+                    
+                    ForEach(monitor.customTargets) { target in
+                        Toggle("\(target.name) (\(target.host))", isOn: Binding(
+                            get: { target.notifyDown },
+                            set: { _ in monitor.toggleCustomTargetNotification(target) }
+                        ))
+                    }
+                }
             }
 
             Section {
@@ -292,6 +293,18 @@ struct SettingsView: View {
                     Text("Dot + Loss %").tag("dotLoss")
                 }
                 .pickerStyle(.radioGroup)
+
+                HStack {
+                    Text("Ping pong animation speed")
+                    Spacer()
+                    Slider(value: $pingPongAnimationSpeed, in: 0.5...1.5, step: 0.1)
+                        .frame(width: 180)
+                    Text(String(format: "%.1fx", pingPongAnimationSpeed))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 42, alignment: .trailing)
+                }
+                .padding(.top, 4)
             }
         }
         .formStyle(.grouped)

@@ -132,14 +132,15 @@ struct LocalDeviceSpeedDetailView: View {
         }
         .chartYScale(domain: yDomain)
         .chartOverlay { proxy in
-            GeometryReader { _ in
+            GeometryReader { geometry in
                 Rectangle()
                     .fill(.clear)
                     .contentShape(Rectangle())
                     .onContinuousHover { phase in
                         switch phase {
                         case .active(let location):
-                            guard let date: Date = proxy.value(atX: location.x) else {
+                            let xPosition = location.x - geometry[proxy.plotAreaFrame].origin.x
+                            guard let date: Date = proxy.value(atX: xPosition) else {
                                 hoveredSample = nil
                                 return
                             }
@@ -151,6 +152,26 @@ struct LocalDeviceSpeedDetailView: View {
                             hoveredSample = nil
                         }
                     }
+            }
+        }
+        .chartBackground { proxy in
+            if let hovered = hoveredSample {
+                GeometryReader { geometry in
+                    if let anchor = proxy.position(forX: hovered.timestamp) {
+                        let x = min(max(anchor, 45), geometry.size.width - 45)
+                        VStack(spacing: 1) {
+                            Text(String(format: "%.0f Mbit/s", hovered.speedMbps))
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            Text(Formatters.timeOnly(hovered.timestamp))
+                                .font(.system(size: 8))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 4))
+                        .position(x: x, y: 12)
+                    }
+                }
             }
         }
         .padding(.horizontal, 12)
